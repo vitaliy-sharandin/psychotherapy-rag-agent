@@ -15,25 +15,21 @@ jobs:
       env:
         SECRETS_JSON: ${{ toJson(secrets) }}
       run: |
-        # Write SECRETS_JSON to a file and validate it as JSON
-        echo "$SECRETS_JSON" | jq '.' > secrets.json
+        # Directly write secrets JSON without echoing to logs
+        echo "$SECRETS_JSON" > secrets.json
 
-        # Debug: Show the content of the secrets.json
-        echo "Secrets JSON content:"
-        cat secrets.json
-
-        # Parse JSON and export secrets as environment variables
+        # Parse the JSON and export secrets as environment variables
         jq -r 'to_entries[] | .key + "=" + @sh .value' secrets.json > secrets.env
 
         # Remove any empty lines from secrets.env
         sed -i '/^$/d' secrets.env
 
         # Export the environment variables
-        while IFS= read -r line; do
-          export "$line"
-        done < secrets.env
+        set -o allexport
+        source secrets.env
+        set +o allexport
 
-        # Debug: List exported environment variable keys
+        # Debug: List exported keys without revealing values
         echo "Exported keys:"
         cut -d '=' -f 1 secrets.env
     # Checkout the code
