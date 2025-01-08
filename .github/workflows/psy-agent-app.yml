@@ -35,14 +35,7 @@ jobs:
     # Create Kubernetes Secret
     - name: Create Kubernetes Secret
       run: |
-        kubectl create secret generic my-secret \
-          --from-literal=TAVILY_API_KEY=${{ secrets.TAVILY_API_KEY }} \
-          --from-literal=LANGCHAIN_TRACING_V2=${{ secrets.LANGCHAIN_TRACING_V2 }} \
-          --from-literal=LANGCHAIN_API_KEY=${{ secrets.LANGCHAIN_API_KEY }} \
-          --from-literal=INSTRUCTION_MODEL_NAME=${{ secrets.INSTRUCTION_MODEL_NAME }} \
-          --from-literal=TEXT_GENERATION_MODEL_NAME=${{ secrets.TEXT_GENERATION_MODEL_NAME }} \
-          --from-literal=LLM_ADDRESS=${{ secrets.LLM_ADDRESS }} \
-          --from-literal=EMBEDDING_MODEL_ADDRESS=${{ secrets.EMBEDDING_MODEL_ADDRESS }}
+        kubectl apply -f k8s/secrets.yml
 
     # Deploy the container
     - name: Deploy to AKS
