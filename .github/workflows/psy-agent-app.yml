@@ -24,11 +24,14 @@ jobs:
 
         # Export each secret as an environment variable
         foreach ($key in $secrets.PSObject.Properties.Name) {
-            $value = $secrets.$key
+            $value = $secrets.$key -replace '\r','' -replace '\n','' # Clean up any line breaks
             Write-Host "Exporting environment variable for: $key"
             
+            # Escape special characters
+            $escapedValue = $value -replace '"', '\"'
+            
             # Persist the variable for subsequent steps
-            "$key=$value" | Out-File -FilePath $envFilePath -Append
+            "$key=$escapedValue" | Out-File -FilePath $envFilePath -Append
         }
 
     - name: envs
