@@ -11,6 +11,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    - name: Export All GitHub Secrets
+      env:
+        SECRETS_JSON: ${{ toJson(secrets) }}
+      run: |
+        echo "$SECRETS_JSON" | jq -r 'to_entries[] | .key + "=" + "\"" + .value + "\""' > secrets.env
+        set -o allexport
+        source secrets.env
+        set +o allexport
+
     # Checkout the code
     - name: Checkout code
       uses: actions/checkout@v3
@@ -32,15 +41,6 @@ jobs:
     - name: Get AKS credentials
       run: |
         az aks get-credentials --resource-group ${{ secrets.PSY_RESOURCE_GROUP }} --name ${{ secrets.PSY_CLUSTER_NAME }}
-
-    - name: Export All GitHub Secrets
-      env:
-        SECRETS_JSON: ${{ toJson(secrets) }}
-      run: |
-        echo "$SECRETS_JSON" | jq -r 'to_entries[] | .key + "=" + .value' > secrets.env
-        set -o allexport
-        source secrets.env
-        set +o allexport
 
     # Create Kubernetes Secret
     - name: Create Kubernetes Secret
