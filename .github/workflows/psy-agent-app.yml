@@ -24,10 +24,11 @@ jobs:
 
     - name: Create Environment Variables from Secrets
       run: |
-        jq -r 'to_entries[] | .key + "=" + (.value | tostring)' formatted-secrets.json > secrets.env
-        set -o allexport
-        source secrets.env
-        set +o allexport
+        jq -r 'to_entries[] | .key + "=" + @sh .value' formatted-secrets.json > secrets.env
+        sed -i '/^$/d' secrets.env  # Remove empty lines
+        echo "set -o allexport" >> secrets.env
+        echo "source secrets.env" >> secrets.env
+        echo "set +o allexport" >> secrets.env
     # Checkout the code
     - name: Checkout code
       uses: actions/checkout@v3
