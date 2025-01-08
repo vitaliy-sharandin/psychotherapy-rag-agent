@@ -15,24 +15,25 @@ jobs:
       env:
         SECRETS_JSON: ${{ toJson(secrets) }}
       run: |
-        # Write secrets JSON to a file
-        echo "$SECRETS_JSON" > secrets.json
+        # Write SECRETS_JSON to a file and validate it as JSON
+        echo "$SECRETS_JSON" | jq '.' > secrets.json
 
-        # Ensure jq is installed
-        sudo apt-get update && sudo apt-get install -y jq
+        # Debug: Show the content of the secrets.json
+        echo "Secrets JSON content:"
+        cat secrets.json
 
-        # Parse JSON and handle keys and values properly
-        jq -r 'to_entries[] | .key + "=" + @json .value' secrets.json > secrets.env
+        # Parse JSON and export secrets as environment variables
+        jq -r 'to_entries[] | .key + "=" + @sh .value' secrets.json > secrets.env
 
         # Remove any empty lines from secrets.env
         sed -i '/^$/d' secrets.env
 
-        # Export the environment variables from secrets.env
+        # Export the environment variables
         while IFS= read -r line; do
           export "$line"
         done < secrets.env
 
-        # Debug: Show all exported environment variable keys
+        # Debug: List exported environment variable keys
         echo "Exported keys:"
         cut -d '=' -f 1 secrets.env
     # Checkout the code
