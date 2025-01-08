@@ -41,4 +41,4 @@ jobs:
     # Deploy the container
     - name: Deploy to AKS
       run: |
-        kubectl apply -f k8s/deploy.yml
+        kubectl replace -f k8s/deploy.yml
