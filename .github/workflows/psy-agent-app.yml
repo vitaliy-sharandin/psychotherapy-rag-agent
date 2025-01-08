@@ -27,6 +27,12 @@ jobs:
         docker build -t ${{ secrets.PSY_ACR_NAME }}.azurecr.io/streamlit-app:latest .
         docker push ${{ secrets.PSY_ACR_NAME }}.azurecr.io/streamlit-app:latest
     
+    # Get AKS credentials
+    - name: Get AKS credentials
+      run: |
+        az aks get-credentials --resource-group ${{ secrets.PSY_RESOURCE_GROUP }} --name ${{ secrets.PSY_CLUSTER_NAME }}
+
+    # Create Kubernetes Secret
     - name: Create Kubernetes Secret
       run: |
         kubectl create secret generic my-secret \
