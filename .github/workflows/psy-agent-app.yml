@@ -19,17 +19,21 @@ jobs:
         # Parse the SECRETS_CONTEXT JSON
         $secrets = $env:SECRETS_CONTEXT | ConvertFrom-Json
 
+        # Prepare GitHub Actions environment file
+        $envFilePath = "$env:GITHUB_ENV"
+
         # Export each secret as an environment variable
         foreach ($key in $secrets.PSObject.Properties.Name) {
             $value = $secrets.$key
             Write-Host "Exporting environment variable for: $key"
-            [System.Environment]::SetEnvironmentVariable($key, $value, [System.EnvironmentVariableTarget]::Process)
+            
+            # Persist the variable for subsequent steps
+            "$key=$value" | Out-File -FilePath $envFilePath -Append
         }
 
-        # Debug: Print keys of all loaded secrets (optional)
-        foreach ($key in $secrets.PSObject.Properties.Name) {
-            Write-Host "Loaded secret: $key"
-        }
+    - name: envs
+      run: |  
+        echo $LLM_ADDRESS
     # Checkout the code
     - name: Checkout code
       uses: actions/checkout@v3
