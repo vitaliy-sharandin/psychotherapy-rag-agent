@@ -11,15 +11,23 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Export All GitHub Secrets as Environment Variables
+    - name: Export All Secrets as Environment Variables Using Hashtable
+      shell: pwsh
       env:
-        SECRETS_JSON: ${{ toJson(secrets) }}
+        SECRETS_CONTEXT: ${{ toJson(secrets) }}
       run: |
-        # Write the secrets JSON to a file
-        echo "$SECRETS_JSON" > secrets.json
-        
-        # Validate JSON structure
-        jq empty secrets.json || (echo "Invalid JSON structure in secrets.json" && exit 1)
+        # Convert SECRETS_CONTEXT JSON to a Hashtable
+        $secrets = ($env:SECRETS_CONTEXT | ConvertFrom-Json | ConvertTo-Hashtable)
+
+        # Export secrets as environment variables
+        foreach ($key in $secrets.Keys) {
+            $value = $secrets[$key]
+            Write-Host "Exporting environment variable for: $key"
+            [System.Environment]::SetEnvironmentVariable($key, $value, [System.EnvironmentVariableTarget]::Process)
+        }
+
+        # Debug: Print keys of all loaded secrets
+        $secrets.Keys | ForEach-Object { Write-Host "Loaded secret: $_" }
     # Checkout the code
     - name: Checkout code
       uses: actions/checkout@v3
