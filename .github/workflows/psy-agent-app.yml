@@ -16,22 +16,7 @@ jobs:
         SECRETS_JSON: ${{ toJson(secrets) }}
       run: |
         # Directly write secrets JSON without echoing to logs
-        echo "$SECRETS_JSON" > secrets.json
-
-        # Parse the JSON and export secrets as environment variables
-        jq -r 'to_entries[] | .key + "=" + @sh .value' secrets.json > secrets.env
-
-        # Remove any empty lines from secrets.env
-        sed -i '/^$/d' secrets.env
-
-        # Export the environment variables
-        set -o allexport
-        source secrets.env
-        set +o allexport
-
-        # Debug: List exported keys without revealing values
-        echo "Exported keys:"
-        cut -d '=' -f 1 secrets.env
+        echo "$SECRETS_JSON"
     # Checkout the code
     - name: Checkout code
       uses: actions/checkout@v3
