@@ -11,24 +11,30 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Export All GitHub Secrets to File
-      env:
-        SECRETS_JSON: ${{ toJson(secrets) }}
-      run: |
-        echo "$SECRETS_JSON" > secrets.json
-        jq '.' secrets.json > formatted-secrets.json # For formatting and validation
-        echo "Secrets exported to secrets.json"
+    - name: Export All GitHub Secrets as Environment Variables
+    env:
+      SECRETS_JSON: ${{ toJson(secrets) }}
+    run: |
+      # Write secrets JSON to a file
+      echo "$SECRETS_JSON" > secrets.json
 
-    - name: Validate Exported Secrets
-      run: cat formatted-secrets.json
+      # Ensure jq is installed
+      sudo apt-get update && sudo apt-get install -y jq
 
-    - name: Create Environment Variables from Secrets
-      run: |
-        jq -r 'to_entries[] | .key + "=" + @sh .value' formatted-secrets.json > secrets.env
-        sed -i '/^$/d' secrets.env  # Remove empty lines
-        echo "set -o allexport" >> secrets.env
-        echo "source secrets.env" >> secrets.env
-        echo "set +o allexport" >> secrets.env
+      # Parse JSON and handle keys and values properly
+      jq -r 'to_entries[] | .key + "=" + @json .value' secrets.json > secrets.env
+
+      # Remove any empty lines from secrets.env
+      sed -i '/^$/d' secrets.env
+
+      # Export the environment variables from secrets.env
+      while IFS= read -r line; do
+        export "$line"
+      done < secrets.env
+
+      # Debug: Show all exported environment variable keys
+      echo "Exported keys:"
+      cut -d '=' -f 1 secrets.env
     # Checkout the code
     - name: Checkout code
       uses: actions/checkout@v3
