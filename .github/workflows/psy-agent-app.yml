@@ -36,7 +36,8 @@ jobs:
     # Create Kubernetes Secret
     - name: Create Kubernetes Secret
       run: |
-        kubectl apply -f k8s/secrets.yml
+        envsubst < secrets.yml > secrets-processed.yml
+        kubectl apply -f k8s/secrets-processed.yml
 
     # Deploy the container
     - name: Deploy to AKS
