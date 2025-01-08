@@ -1,0 +1,44 @@
+name: Deploy Streamlit App to Azure
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+    # Checkout the code
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    # Log in to Azure CLI
+    - name: Log in to Azure
+      uses: azure/login@v1
+      with:
+        creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+    # Build and push Docker image to ACR
+    - name: Build and push Docker image
+      run: |
+        az acr login --name ${{ secrets.PSY_ACR_NAME }}
+        docker build -t ${{ secrets.PSY_ACR_NAME }}.azurecr.io/streamlit-app:latest .
+        docker push ${{ secrets.PSY_ACR_NAME }}.azurecr.io/streamlit-app:latest
+    
+    - name: Create Kubernetes Secret
+      run: |
+        kubectl create secret generic my-secret \
+          --from-literal=TAVILY_API_KEY=${{ secrets.TAVILY_API_KEY }} \
+          --from-literal=LANGCHAIN_TRACING_V2=${{ secrets.LANGCHAIN_TRACING_V2 }} \
+          --from-literal=LANGCHAIN_API_KEY=${{ secrets.LANGCHAIN_API_KEY }} \
+          --from-literal=INSTRUCTION_MODEL_NAME=${{ secrets.INSTRUCTION_MODEL_NAME }} \
+          --from-literal=TEXT_GENERATION_MODEL_NAME=${{ secrets.TEXT_GENERATION_MODEL_NAME }} \
+          --from-literal=LLM_ADDRESS=${{ secrets.LLM_ADDRESS }} \
+          --from-literal=EMBEDDING_MODEL_ADDRESS=${{ secrets.EMBEDDING_MODEL_ADDRESS }}
+
+    # Deploy the container
+    - name: Deploy to AKS
+      run: |
+        kubectl apply -f k8s/deploy.yml

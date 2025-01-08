@@ -1,0 +1,82 @@
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: psy-agent
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: psy-agent
+    template:
+      metadata:
+        labels:
+          app: psy-agent
+      spec:
+        nodeSelector:
+          pool: cpunode
+        containers:
+          - name: psy-agent
+            image: psyserviceregistry.azurecr.io/psy-agent:latest
+            ports:
+              - containerPort: 80
+              - containerPort: 8501
+            resources:
+              requests:
+                cpu: '0'
+                memory: '0'
+              limits:
+                cpu: '256'
+                memory: 11400G
+            env:
+              - name: TAVILY_API_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: my-secret
+                    key: TAVILY_API_KEY
+              - name: LANGCHAIN_TRACING_V2
+                valueFrom:
+                  secretKeyRef:
+                    name: my-secret
+                    key: LANGCHAIN_TRACING_V2
+              - name: LANGCHAIN_API_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: my-secret
+                    key: LANGCHAIN_API_KEY
+              - name: INSTRUCTION_MODEL_NAME
+                valueFrom:
+                  secretKeyRef:
+                    name: my-secret
+                    key: INSTRUCTION_MODEL_NAME
+              - name: TEXT_GENERATION_MODEL_NAME
+                valueFrom:
+                  secretKeyRef:
+                    name: my-secret
+                    key: TEXT_GENERATION_MODEL_NAME
+              - name: LLM_ADDRESS
+                valueFrom:
+                  secretKeyRef:
+                    name: my-secret
+                    key: LLM_ADDRESS
+              - name: EMBEDDING_MODEL_ADDRESS
+                valueFrom:
+                  secretKeyRef:
+                    name: my-secret
+                    key: EMBEDDING_MODEL_ADDRESS
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: psy-agent-service
+  spec:
+    type: LoadBalancer
+    ports:
+      - targetPort: 80
+        name: port80
+        port: 80
+        protocol: TCP
+      - targetPort: 8501
+        name: port8501
+        port: 8501
+        protocol: TCP
+    selector:
+      app: psy-agent

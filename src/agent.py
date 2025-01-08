@@ -8,6 +8,7 @@ from typing import TypedDict, Annotated, List
 import sqlite3
 
 from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 from langchain_core.pydantic_v1 import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage, AnyMessage
 from langchain_core.tools import tool
@@ -44,6 +45,9 @@ PROFILE = os.getenv('PROFILE', 'dev')
 TAVILY_API_KEY = os.getenv('TAVILY_API_KEY', '')
 LANGCHAIN_TRACING_V2 = os.getenv('LANGCHAIN_TRACING_V2', 'false')
 LANGCHAIN_API_KEY = os.getenv('LANGCHAIN_API_KEY', '')
+
+INSTRUCTIONS_MODEL_NAME = os.getenv('INSTRUCTION_MODEL_NAME', 'ollama')
+TEXT_GENERATION_MODEL_NAME = os.getenv('TEXT_GENERATION_MODEL_NAME', 'ollama')
 
 LLM_API_KEY = os.getenv('LLM_API_KEY', 'ollama')
 LLM_ADDRESS = os.getenv('LLM_ADDRESS', 'http://localhost:11434')
@@ -199,17 +203,15 @@ class PsyAgent:
         User request: {request}
         <KNOWLEDGE_END>"""
     
-    INSTRUCTIONS_MODEL_NAME = "llama3.2-vision"
-    TEXT_GENERATION_MODEL_NAME = "llama3.2-vision"
-
-    
-    text_generation_model = ChatOllama(
+    text_generation_model = ChatOpenAI(
         model=TEXT_GENERATION_MODEL_NAME,
+        api_key=LLM_API_KEY,
         base_url=LLM_ADDRESS,
         temperature=0
     )
-    instructions_model = ChatOllama(
+    instructions_model = ChatOpenAI(
         model=INSTRUCTIONS_MODEL_NAME,
+        api_key=LLM_API_KEY,
         base_url=LLM_ADDRESS,
         temperature=0
     )

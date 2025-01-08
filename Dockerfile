@@ -1,21 +1,24 @@
-# Use an official Python runtime as a parent image
 FROM python:3.12-slim
 
-# Set work directory
 WORKDIR /app
 
-# Copy requirements.txt for dependency installation
-COPY requirements.txt .
+RUN apt-get update && apt-get install -y \
+    curl \
+    ca-certificates \
+    unzip \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies using pip
-RUN pip install --upgrade pip \
-    && pip install -r requirements.txt
+RUN pip install --upgrade pip
 
-# Copy the application code
 COPY src ./src
+COPY pyproject.toml .
+COPY uv.lock . 
 
-# Expose Streamlit default port
+ADD https://astral.sh/uv/install.sh /uv-installer.sh
+RUN sh /uv-installer.sh && rm /uv-installer.sh
+ENV PATH="/root/.local/bin/:$PATH"
+RUN uv sync
+
 EXPOSE 8501
 
-# Command to run Streamlit app
-CMD ["streamlit", "run", "src/streamlit-app.py"]
+CMD ["uv", "run", "streamlit", "run", "src/streamlit-app.py"]
