@@ -42,3 +42,9 @@ jobs:
     - name: Deploy to AKS
       run: |
         kubectl replace -f k8s/deploy.yml
+    
+    - name: Restart deployment
+      run: |
+        kubectl rollout restart deployment psy-agent
+
+        
