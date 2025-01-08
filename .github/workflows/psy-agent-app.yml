@@ -11,23 +11,25 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Export All Secrets as Environment Variables Using Hashtable
+    - name: Export All Secrets as Environment Variables
       shell: pwsh
       env:
         SECRETS_CONTEXT: ${{ toJson(secrets) }}
       run: |
-        # Convert SECRETS_CONTEXT JSON to a Hashtable
-        $secrets = ($env:SECRETS_CONTEXT | ConvertFrom-Json | ConvertTo-Hashtable)
+        # Parse the SECRETS_CONTEXT JSON
+        $secrets = $env:SECRETS_CONTEXT | ConvertFrom-Json
 
-        # Export secrets as environment variables
-        foreach ($key in $secrets.Keys) {
-            $value = $secrets[$key]
+        # Export each secret as an environment variable
+        foreach ($key in $secrets.PSObject.Properties.Name) {
+            $value = $secrets.$key
             Write-Host "Exporting environment variable for: $key"
             [System.Environment]::SetEnvironmentVariable($key, $value, [System.EnvironmentVariableTarget]::Process)
         }
 
-        # Debug: Print keys of all loaded secrets
-        $secrets.Keys | ForEach-Object { Write-Host "Loaded secret: $_" }
+        # Debug: Print keys of all loaded secrets (optional)
+        foreach ($key in $secrets.PSObject.Properties.Name) {
+            Write-Host "Loaded secret: $key"
+        }
     # Checkout the code
     - name: Checkout code
       uses: actions/checkout@v3
