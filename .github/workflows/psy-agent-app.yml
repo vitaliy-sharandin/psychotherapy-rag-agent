@@ -15,8 +15,11 @@ jobs:
       env:
         SECRETS_JSON: ${{ toJson(secrets) }}
       run: |
-        # Directly write secrets JSON without echoing to logs
-        echo "$SECRETS_JSON"
+        # Write the secrets JSON to a file
+        echo "$SECRETS_JSON" > secrets.json
+        
+        # Validate JSON structure
+        jq empty secrets.json || (echo "Invalid JSON structure in secrets.json" && exit 1)
     # Checkout the code
     - name: Checkout code
       uses: actions/checkout@v3
