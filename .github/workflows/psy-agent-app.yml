@@ -15,7 +15,8 @@ jobs:
       env:
         SECRETS_JSON: ${{ toJson(secrets) }}
       run: |
-        echo "$SECRETS_JSON" | jq -r 'to_entries[] | .key + "=" + "\"" + .value + "\""' > secrets.env
+        echo "$SECRETS_JSON" | jq -r 'to_entries[] | .key + "=" + @json .value' > secrets.env
+        sed -i '/^$/d' secrets.env  # Remove empty lines
         set -o allexport
         source secrets.env
         set +o allexport
