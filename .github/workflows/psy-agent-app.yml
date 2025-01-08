@@ -19,7 +19,8 @@ jobs:
         set -o allexport
         source secrets.env
         set +o allexport
-
+    - name: Debug Secrets File
+      run: cat secrets.env
     # Checkout the code
     - name: Checkout code
       uses: actions/checkout@v3
