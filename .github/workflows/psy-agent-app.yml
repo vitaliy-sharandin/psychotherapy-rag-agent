@@ -11,17 +11,23 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Export All GitHub Secrets to Environment Variables
+    - name: Export All GitHub Secrets to File
       env:
         SECRETS_JSON: ${{ toJson(secrets) }}
       run: |
-        echo "$SECRETS_JSON" | jq -r 'to_entries[] | .key + "=" + @sh .value' > secrets.env
-        sed -i '/^$/d' secrets.env  # Remove empty lines
+        echo "$SECRETS_JSON" > secrets.json
+        jq '.' secrets.json > formatted-secrets.json # For formatting and validation
+        echo "Secrets exported to secrets.json"
+
+    - name: Validate Exported Secrets
+      run: cat formatted-secrets.json
+
+    - name: Create Environment Variables from Secrets
+      run: |
+        jq -r 'to_entries[] | .key + "=" + (.value | tostring)' formatted-secrets.json > secrets.env
         set -o allexport
         source secrets.env
         set +o allexport
-    - name: Debug Secrets File
-      run: cat secrets.env
     # Checkout the code
     - name: Checkout code
       uses: actions/checkout@v3
