@@ -36,7 +36,7 @@ jobs:
     # Create Kubernetes Secret
     - name: Create Kubernetes Secret
       run: |
-        envsubst < secrets.yml > secrets-processed.yml
+        envsubst < k8s/secrets.yml > k8s/secrets-processed.yml
         kubectl apply -f k8s/secrets-processed.yml
 
     # Deploy the container
