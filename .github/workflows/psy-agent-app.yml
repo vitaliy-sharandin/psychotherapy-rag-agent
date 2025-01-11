@@ -1,4 +1,4 @@
-name: Deploy Streamlit App to Azure
+name: Deploy Streamlit App to AKS
 
 on:
   push:
@@ -15,28 +15,8 @@ jobs:
       shell: pwsh
       env:
         SECRETS_CONTEXT: ${{ toJson(secrets) }}
-      run: |
-        # Parse the SECRETS_CONTEXT JSON
-        $secrets = $env:SECRETS_CONTEXT | ConvertFrom-Json
+      run: ./.github/workflows/export-github-secrets.ps1
 
-        # Prepare GitHub Actions environment file
-        $envFilePath = "$env:GITHUB_ENV"
-
-        # Export each secret as an environment variable
-        foreach ($key in $secrets.PSObject.Properties.Name) {
-            $value = $secrets.$key -replace '\r','' -replace '\n','' # Clean up any line breaks
-            Write-Host "Exporting environment variable for: $key"
-            
-            # Escape special characters
-            $escapedValue = $value -replace '"', '\"'
-            
-            # Persist the variable for subsequent steps
-            "$key=$escapedValue" | Out-File -FilePath $envFilePath -Append
-        }
-
-    - name: envs
-      run: |  
-        echo $LLM_ADDRESS
     # Checkout the code
     - name: Checkout code
       uses: actions/checkout@v3
@@ -63,16 +43,14 @@ jobs:
     - name: Create Kubernetes Secret
       run: |
         envsubst < k8s/secrets.yml > k8s/secrets-processed.yml
-        cat k8s/secrets-processed.yml
         kubectl apply -f k8s/secrets-processed.yml
 
     # Deploy the container
     - name: Deploy to AKS
       run: |
-        kubectl replace -f k8s/deploy.yml
-    
+        kubectl apply -f k8s/deploy.yml
+
+    # Restart the deployment
     - name: Restart deployment
       run: |
         kubectl rollout restart deployment psy-agent
-
-        
