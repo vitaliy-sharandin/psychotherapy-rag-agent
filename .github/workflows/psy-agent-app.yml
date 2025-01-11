@@ -11,15 +11,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    # Checkout the code
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    # Export all secrets as environment variables
     - name: Export All Secrets as Environment Variables
       shell: pwsh
       env:
         SECRETS_CONTEXT: ${{ toJson(secrets) }}
       run: ./.github/workflows/export-github-secrets.ps1
-
-    # Checkout the code
-    - name: Checkout code
-      uses: actions/checkout@v3
 
     # Log in to Azure CLI
     - name: Log in to Azure
