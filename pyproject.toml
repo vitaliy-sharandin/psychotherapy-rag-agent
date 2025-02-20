@@ -20,7 +20,8 @@ dependencies = [
     "llama-index-llms-ollama==0.5.0",
     "llama-index-postprocessor-flag-embedding-reranker==0.3.0",
     "langgraph==0.2.60",
-    "tavily-python==0.5.0"
+    "tavily-python==0.5.0",
+    "prometheus-client==0.21.1"
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -34,7 +35,7 @@ build-backend = "hatchling.build"
 select = ["ALL"]
 
 [tool.ruff.format]
-indent-style = "tab"
+indent-style = "space"
 
 [tool.ruff]
 line-length = 120

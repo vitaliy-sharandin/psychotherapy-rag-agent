@@ -2,7 +2,7 @@
 
 Psy AI is an agent that leverages local Ollama Llama 3.1 8b model together with RAG and web capabilites to provide insights based on user input. Its prompting is optimized to psychology, psychotherapy, and psychiatry to help user in most professional yet caring manner.
 
-## How It Works
+## Components
 
 ### Local Ollama Llama 3.1 8b Agent (agent.py)
 The Psy AI assistant is built using the locally hosted Ollama Llama 3.1 8b model, which serves as the foundational language model for the system. Tests were conducted using Nvidia Geforce RTX 4090, which provided low latency during model interactions. If you wish, you can substitute the default model with any desired one, whether based on API or local.
@@ -31,27 +31,30 @@ The Streamlit app provides a conversational interface. Users input their queries
 
 ## Prerequisites
 - Python 3.12 or higher
-- UV installed
+- UV package manager
 - Docker
-- Llama model being served
-- Embedding model being served
+- Azure CLI
+- Llama model being served on port `8000`
+- Embedding model being served on port `11434`
 - Generate [Tavily API key](https://app.tavily.com/)
 
-## Local Model Serving
+### UV Streamlit run
+- Run command below to launch streamlit agent
+- `uv `
 
 ### Build Docker Image
 ```bash
 # Build the Docker image
-docker build -t psy-model .
+docker build -t psy-agent .
 
 # Change the Docker tag (if needed)
-docker tag psy-model:latest psyserviceregistry.azurecr.io/psy-model
+docker tag psy-agent:latest psyserviceregistry.azurecr.io/psy-agent
 ```
 
 ### Launch Docker Container
 ```bash
 # Run the Docker container with GPU support and exposed ports
-docker run --runtime=nvidia --gpus=all -p 8000:8000 -p 11434:11434 psy-model
+docker run -p 8501:8501 psyserviceregistry.azurecr.io/psy-agent
 ```
 
 ## Azure Cloud Deployment
@@ -62,27 +65,28 @@ docker run --runtime=nvidia --gpus=all -p 8000:8000 -p 11434:11434 psy-model
 az acr login --name <psyserviceregistry>
 
 # Push the Docker image to Azure
-docker push psyserviceregistry.azurecr.io/psy-model
+docker push psyserviceregistry.azurecr.io/psy-agent
 ```
 
 ### Azure AKS Deployment
-1. Create a Kubernetes cluster with a GPU pool node.
-2. Install the NVIDIA device plugin on the GPU node:
+1. Create a Kubernetes cluster with a CPU pool node.
+1. Label the CPU pool node as `pool=cpunode`:
    ```bash
-   az aks command invoke \
-       --resource-group myResourceGroup \
-       --name myAKSCluster \
-       --command "kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.13.0/nvidia-device-plugin.yml"
+   kubectl label node <node-name> pool=cpunode
    ```
-3. Restart the node.
-4. Label the GPU pool node as `pool=gpunode`:
+1. Deploy the pod using the YAML configuration file in the `k8s` directory:
    ```bash
-   kubectl label node <node-name> pool=gpunode
-   ```
-5. Deploy the pod using the YAML configuration file in the `k8s` directory:
-   ```bash
-   kubectl apply -f k8s/psy-model-deployment.yml
+   kubectl apply -f k8s/deploy.yml
    ```
 
 ## Automatic Deployment
 The repository is configured with **GitHub Actions** for automated deployment. All steps, including Docker build, push, and AKS deployment, are performed automatically upon code changes.
+
+## Monitoring
+- Prometheus + Grafana with Docker compose
+
+## Data drift detection
+TBD
+
+## Retraining
+TBD
