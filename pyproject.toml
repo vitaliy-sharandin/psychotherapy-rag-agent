@@ -8,10 +8,10 @@ authors = [
 requires-python = ">=3.12"
 
 dependencies = [
-    "streamlit==1.41.1",
+    "streamlit==1.42.1",
     "chromadb==0.5.23",
     "llama-index==0.12.7",
-    "langchain-core==0.3.28",
+    "langchain==0.3.19",
     "langchain-openai==0.2.14",
     "langchain-ollama==0.2.2",
     "langgraph-checkpoint-sqlite==2.0.1",
@@ -21,7 +21,8 @@ dependencies = [
     "llama-index-postprocessor-flag-embedding-reranker==0.3.0",
     "langgraph==0.2.60",
     "tavily-python==0.5.0",
-    "prometheus-client==0.21.1"
+    "prometheus-client==0.21.1",
+    "langfuse==2.59.3"    
 ]
 
 [tool.hatch.build.targets.wheel]

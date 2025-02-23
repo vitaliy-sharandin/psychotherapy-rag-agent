@@ -29,17 +29,10 @@ USER_FEEDBACK = Counter(
     ["type"],  # type can be thumbs_up or thumbs_down
 )
 
-# Response timing
-NODE_RESPONSE_TIME = Histogram(
-    "psy_agent_node_response_time_seconds",
-    "Node response generation time in seconds",
-    ["node"],  # node can be any node in the graph
-)
-
 AGENT_RESPONSE_TIME = Histogram(
     "psy_agent_response_time_seconds",
     "Agent response generation time in seconds",
-    ["agent"],  # node can be any node in the graph
+    ["node"],  # node can be any node in the graph
 )
 
 

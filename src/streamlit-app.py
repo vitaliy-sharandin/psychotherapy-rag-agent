@@ -1,43 +1,61 @@
+import os
+import uuid
 import streamlit as st
 from agent import PsyAgent
 from langchain_core.messages import HumanMessage
 from metrics import REQUEST_COUNT, REQUEST_LATENCY, ERROR_COUNT, USER_FEEDBACK, AGENT_RESPONSE_TIME
 import time
 from prometheus_client import start_http_server
+from langfuse.callback import CallbackHandler
+from dotenv import load_dotenv
+from langfuse.client import Langfuse
+from langfuse.decorators import langfuse_context, observe
 
-start_http_server(8001)
+load_dotenv()
+
+LANGFUSE_MONITORING = os.getenv("LANGFUSE_MONITORING", "false")
+PROMETHEUS_GRAFANA_MONITORING = os.getenv("PROMETHEUS_GRAFANA_MONITORING", "false")
 
 st.title("Psy AI")
 
-config = {"configurable": {"thread_id": "1"}}
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-    st.session_state.agent = PsyAgent(config, knowledge_retrieval=False, debug=True)
-
-if "feedback" not in st.session_state:
-    st.session_state.feedback = {}
+@st.cache_resource
+def get_langfuse():
+    return Langfuse()
 
 
-def log_response_feedback(session_messages, user_input, agent_response, response_time):
-    col1, col2, col3 = st.columns([1, 1, 3])
-    msg_idx = len(session_messages)
+def start_prometheus_server():
+    if "server_started" not in st.session_state and PROMETHEUS_GRAFANA_MONITORING == "true":
+        start_http_server(8001)
+        st.session_state.server_started = True
 
-    with col1:
-        if st.button("👍", key=f"thumbs_up_{msg_idx}"):
-            st.session_state.feedback[msg_idx] = "positive"
-            USER_FEEDBACK.labels("thumbs_up").inc()
-            # TODO FEEDBACK IS NOT LOGGED HERE TO PROMETHEUS!!!
 
-            # TODO log feeback with message to Arize or whatever
+def handle_feedback(msg_idx, msg_langfuse_trace_id):
+    st.session_state.feedback[msg_idx] = "thumbs_up" if st.session_state[f"feedback_{msg_idx}"] else "thumbs_down"
+    USER_FEEDBACK.labels(st.session_state.feedback[msg_idx]).inc()
 
-    with col2:
-        if st.button("👎", key=f"thumbs_down_{msg_idx}"):
-            st.session_state.feedback[msg_idx] = "negative"
-            USER_FEEDBACK.labels("thumbs_down").inc()
-            # TODO FEEDBACK IS NOT LOGGED HERE TO PROMETHEUS!!!
+    if LANGFUSE_MONITORING == "true":
+        get_langfuse().score(
+            trace_id=msg_langfuse_trace_id,
+            name="helpfulness",
+            value=st.session_state[f"feedback_{msg_idx}"],
+            data_type="BOOLEAN",
+        )
 
-            # TODO log feeback with message to Arize or whatever
+
+def render_feedback_buttons(msg_idx, response_time, msg_langfuse_trace_id):
+    if "feedback" not in st.session_state:
+        st.session_state.feedback = {}
+
+    feedback_state = st.session_state.feedback.get(msg_idx, None)
+
+    st.feedback(
+        "thumbs",
+        key=f"feedback_{msg_idx}",
+        disabled=feedback_state is not None,
+        on_change=handle_feedback,
+        args=[msg_idx, msg_langfuse_trace_id],
+    )  # type: ignore
 
     with st.expander("View metrics"):
         st.metric("Response time", f"{response_time:0.2f}s")
@@ -45,7 +63,7 @@ def log_response_feedback(session_messages, user_input, agent_response, response
         st.text(f"Feedback: {feedback}")
 
 
-def output_agent_response(user_input, final_response, session_messages):
+def output_agent_response(user_input, final_response, session_messages, input_start_time, msg_langfuse_trace_id):
     with st.chat_message("assistant"):
         response_time = time.time() - input_start_time
         AGENT_RESPONSE_TIME.labels("total").observe(response_time)
@@ -53,62 +71,92 @@ def output_agent_response(user_input, final_response, session_messages):
         agent_response = final_response["messages"][-1].content
         st.markdown(agent_response)
 
-        log_response_feedback(session_messages, user_input, agent_response, response_time)
+        msg_idx = len(session_messages)
+        render_feedback_buttons(msg_idx, response_time, msg_langfuse_trace_id)
 
-    session_messages.append({"role": "assistant", "content": agent_response, "response_time": response_time})
+    session_messages.append(
+        {
+            "role": "assistant",
+            "content": agent_response,
+            "response_time": response_time,
+            "msg_langfuse_trace_id": msg_langfuse_trace_id,
+        }
+    )
 
 
-session_agent = st.session_state.agent
-session_messages = st.session_state.messages
-session_feedback = st.session_state.feedback
+def get_config():
+    if "config" not in st.session_state:
+        st.session_state.config = {"configurable": {"thread_id": "1"}}
+    config = st.session_state.config
 
-for idx, message in enumerate(session_messages):
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+    predefined_run_id = str(uuid.uuid4())
+    config["run_id"] = predefined_run_id
 
-        # Add feedback buttons and metrics for assistant messages
-        if message["role"] == "assistant":
-            col1, col2, col3 = st.columns([1, 1, 3])
+    if LANGFUSE_MONITORING == "true" and "callbacks" not in config:
+        session_id = str(uuid.uuid4())
+        langfuse_handler = CallbackHandler(session_id=f"session_{session_id}")
+        config["callbacks"] = [langfuse_handler]
 
-            # Feedback buttons
-            with col1:
-                if st.button("👍", key=f"thumbs_up_{idx}"):
-                    st.session_state.feedback[idx] = "positive"
+    return config
 
-            with col2:
-                if st.button("👎", key=f"thumbs_down_{idx}"):
-                    st.session_state.feedback[idx] = "negative"
 
-            # Metrics expander
-            with st.expander("View metrics"):
-                st.metric("Response time", f"{message.get('response_time', 0):.2f}s")
-                feedback = st.session_state.feedback.get(idx, "No feedback yet")
-                st.text(f"Feedback: {feedback}")
+def render_message_history():
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+        st.session_state.agent = PsyAgent({"configurable": {"thread_id": "1"}}, knowledge_retrieval=False, debug=True)
 
-if user_input := st.chat_input("How can I help you?"):
-    input_start_time = time.time()
+    for idx, message in enumerate(st.session_state.messages):
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
 
-    with st.chat_message("user"):
-        st.markdown(user_input)
-    session_messages.append({"role": "user", "content": user_input})
+            if message["role"] == "assistant":
+                render_feedback_buttons(
+                    idx, message.get("response_time", 0), message.get("msg_langfuse_trace_id", None)
+                )
 
-    user_prompt = HumanMessage(content=user_input)
 
-    if "last_node" not in session_agent.graph.get_state(config).values:
-        with st.spinner("Thinking..."):
-            REQUEST_LATENCY.labels("total").observe(time.time() - input_start_time)
+def run_agent():
+    session_messages = st.session_state.messages
+    session_agent = st.session_state.agent
+    config = get_config()
 
-            for event in session_agent.graph.stream({"messages": [user_prompt]}, config, stream_mode="values"):
-                final_response = event
+    if user_input := st.chat_input("How can I help you?"):
+        input_start_time = time.time()
 
-            output_agent_response(user_input, final_response, session_messages)
+        with st.chat_message("user"):
+            st.markdown(user_input)
+        session_messages.append({"role": "user", "content": user_input})
 
-    else:
-        last_node = session_agent.graph.get_state(config).values["last_node"]
-        session_agent.graph.update_state(config, {"messages": [user_prompt]}, as_node=last_node)
+        user_prompt = HumanMessage(content=user_input)
 
-        with st.spinner("Thinking..."):
-            for event in session_agent.graph.stream(None, config, stream_mode="values"):
-                final_response = event
+        if "last_node" not in session_agent.graph.get_state(config).values:
+            with st.spinner("Thinking..."):
+                REQUEST_LATENCY.labels("total").observe(time.time() - input_start_time)
 
-            output_agent_response(user_input, final_response, session_messages)
+                final_response = None
+                for event in session_agent.graph.stream({"messages": [user_prompt]}, config, stream_mode="values"):
+                    final_response = event
+
+                output_agent_response(
+                    user_input, final_response, session_messages, input_start_time, config.get("run_id", None)
+                )
+
+        else:
+            last_node = session_agent.graph.get_state(config).values["last_node"]
+            session_agent.graph.update_state(config, {"messages": [user_prompt]}, as_node=last_node)
+
+            with st.spinner("Thinking..."):
+                REQUEST_LATENCY.labels("total").observe(time.time() - input_start_time)
+
+                final_response = None
+                for event in session_agent.graph.stream(None, config, stream_mode="values"):
+                    final_response = event
+
+                output_agent_response(
+                    user_input, final_response, session_messages, input_start_time, config.get("run_id", None)
+                )
+
+
+start_prometheus_server()
+render_message_history()
+run_agent()

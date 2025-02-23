@@ -29,7 +29,7 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 from tavily import TavilyClient
 
 import prompts
-from metrics import REQUEST_COUNT, REQUEST_LATENCY, NODE_RESPONSE_TIME, timer
+from metrics import REQUEST_COUNT, REQUEST_LATENCY, AGENT_RESPONSE_TIME, timer
 
 load_dotenv()
 
@@ -108,6 +108,7 @@ class PsyAgent:
         rag_search_enabled=True,
         debug=False,
     ):
+        self.prompts = prompts
         self.knowledge_base_folder = knowledge_base_folder
 
         self.text_generation_model = text_generation_model
@@ -122,10 +123,10 @@ class PsyAgent:
         builder.set_entry_point("action_selector")
 
         if knowledge_retrieval:
-            prompts.ACTION_DETECTION_PROMPT = prompts.ACTION_DETECTION_PROMPT.format(
-                knowledge_retrieval_prompt=prompts.KNOWLEDGE_RETRIEVAL_PROMPT
+            self.prompts.ACTION_DETECTION_PROMPT = self.prompts.ACTION_DETECTION_PROMPT.format(
+                knowledge_retrieval_prompt=self.prompts.KNOWLEDGE_RETRIEVAL_PROMPT
             )
-            action_detection_options = prompts.ACTION_DETECTION_OPTIONS_WITH_KNOWLEDGE_RETRIEVAL
+            action_detection_options = self.prompts.ACTION_DETECTION_OPTIONS_WITH_KNOWLEDGE_RETRIEVAL
 
             builder.add_node("knowledge_retrieval", self.knowledge_retrieval_node)
             builder.add_node("knowledge_evaluation", self.knowledge_evaluation_node)
@@ -150,11 +151,13 @@ class PsyAgent:
             builder.add_conditional_edges(
                 "knowledge_evaluation",
                 self.knowledge_relevancy_evaluation,
-                prompts.KNOWLEDGE_RELEVANCY_EVALUATION_OPTIONS,
+                self.prompts.KNOWLEDGE_RELEVANCY_EVALUATION_OPTIONS,
             )
         else:
-            prompts.ACTION_DETECTION_PROMPT = prompts.ACTION_DETECTION_PROMPT.format(knowledge_retrieval_prompt="")
-            action_detection_options = prompts.ACTION_DETECTION_OPTIONS_NO_KNOWLEDGE_RETRIEVAL
+            self.prompts.ACTION_DETECTION_PROMPT = self.prompts.ACTION_DETECTION_PROMPT.format(
+                knowledge_retrieval_prompt=""
+            )
+            action_detection_options = self.prompts.ACTION_DETECTION_OPTIONS_NO_KNOWLEDGE_RETRIEVAL
 
         builder.add_conditional_edges("action_selector", self.select_action, action_detection_options)
 
@@ -169,7 +172,7 @@ class PsyAgent:
         )
         self.graph.update_state(config, {"knowledge_search_summary": "", "knowledge_reevaluation_counter": 0})
 
-    @timer(name="vector_db_creation", metric=NODE_RESPONSE_TIME)
+    @timer(name="vector_db_creation", metric=AGENT_RESPONSE_TIME)
     def _initialize_vector_store(self):
         Settings.llm = Ollama(model=TEXT_GENERATION_MODEL_NAME)
         documents = SimpleDirectoryReader(f"{self.knowledge_base_folder}", filename_as_id=True).load_data()
@@ -248,14 +251,14 @@ class PsyAgent:
 
         self.automerging_query_engine = RetrieverQueryEngine.from_args(retriever, node_postprocessors=[rerank])
 
-    @timer(name="action_selector_node", metric=NODE_RESPONSE_TIME)
+    @timer(name="action_selector_node", metric=AGENT_RESPONSE_TIME)
     def action_selector_node(self, state: AgentState):
         user_request = state["messages"][-1].content
 
         messages = state["messages"] + [
-            SystemMessage(content=prompts.PSYCHOLOGY_AGENT_PROMPT),
+            SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
             HumanMessage(
-                content=prompts.ACTION_DETECTION_PROMPT.format(
+                content=self.prompts.ACTION_DETECTION_PROMPT.format(
                     knowledge=state["knowledge_search_summary"], prompt=user_request
                 )
             ),
@@ -267,18 +270,18 @@ class PsyAgent:
     def select_action(self, state: AgentState):
         return state["action"]
 
-    @timer(name="clarify_node", metric=NODE_RESPONSE_TIME)
+    @timer(name="clarify_node", metric=AGENT_RESPONSE_TIME)
     def clarify_node(self, state: AgentState):
         messages = state["messages"] + [
-            SystemMessage(content=prompts.PSYCHOLOGY_AGENT_PROMPT),
-            SystemMessage(content=prompts.THERAPIST_POLICY_PROMPT),
-            HumanMessage(content=prompts.CLARIFICATION_PROMPT.format(prompt=state["request"])),
+            SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
+            SystemMessage(content=self.prompts.THERAPIST_POLICY_PROMPT),
+            HumanMessage(content=self.prompts.CLARIFICATION_PROMPT.format(prompt=state["request"])),
         ]
 
         response = self.text_generation_model.invoke(messages)
         return {"messages": [response], "last_node": "clarify"}
 
-    @timer(name="knowledge_retrieval_node", metric=NODE_RESPONSE_TIME)
+    @timer(name="knowledge_retrieval_node", metric=AGENT_RESPONSE_TIME)
     def knowledge_retrieval_node(self, state: AgentState):
         rag_queries = state["rag_queries"]
         web_queries = state["web_queries"]
@@ -287,7 +290,7 @@ class PsyAgent:
             queries = self.instructions_model.with_structured_output(Queries).invoke(
                 [
                     SystemMessage(
-                        content=prompts.QUERIES_REGENERATION_PROMPT.format(
+                        content=self.prompts.QUERIES_REGENERATION_PROMPT.format(
                             rag=state["rag_queries"], web=state["web_queries"], request=state["request"]
                         )
                     ),
@@ -300,7 +303,7 @@ class PsyAgent:
             queries = self.instructions_model.with_structured_output(RagQueries).invoke(
                 [
                     SystemMessage(
-                        content=prompts.RAG_RENENERATION_PROMPT.format(
+                        content=self.prompts.RAG_RENENERATION_PROMPT.format(
                             rag=state["rag_queries"], request=state["request"]
                         )
                     ),
@@ -312,7 +315,7 @@ class PsyAgent:
             queries = self.instructions_model.with_structured_output(WebQueries).invoke(
                 [
                     SystemMessage(
-                        content=prompts.WEB_REGENERATION_PROMPT.format(
+                        content=self.prompts.WEB_REGENERATION_PROMPT.format(
                             web=state["web_queries"], request=state["request"]
                         )
                     ),
@@ -322,13 +325,13 @@ class PsyAgent:
             web_queries = ast.literal_eval(queries.web_queries) if queries.web_queries else []
         else:
             queries = self.instructions_model.with_structured_output(Queries).invoke(
-                [SystemMessage(content=prompts.QUERIES_GENERATION_PROMPT), HumanMessage(content=state["request"])]
+                [SystemMessage(content=self.prompts.QUERIES_GENERATION_PROMPT), HumanMessage(content=state["request"])]
             )
             rag_queries = ast.literal_eval(queries.rag_queries) if queries.rag_queries else []
             web_queries = ast.literal_eval(queries.web_queries) if queries.web_queries else []
         return {"rag_queries": rag_queries, "web_queries": web_queries, "last_node": "knowledge_retrieval"}
 
-    @timer(name="rag_search_node", metric=NODE_RESPONSE_TIME)
+    @timer(name="rag_search_node", metric=AGENT_RESPONSE_TIME)
     def rag_search_node(self, state: AgentState):
         """RAG search through local documents vector database based on user request"""
 
@@ -340,7 +343,7 @@ class PsyAgent:
             return {"rag_search_results": rag_results}
         return {"rag_search_results": []}
 
-    @timer(name="web_search_node", metric=NODE_RESPONSE_TIME)
+    @timer(name="web_search_node", metric=AGENT_RESPONSE_TIME)
     def web_search_node(self, state: AgentState):
         """Searches web for information based on user's request"""
 
@@ -353,12 +356,12 @@ class PsyAgent:
             return {"web_search_results": search_results}
         return {"web_search_results": []}
 
-    @timer(name="knowledge_evaluation_node", metric=NODE_RESPONSE_TIME)
+    @timer(name="knowledge_evaluation_node", metric=AGENT_RESPONSE_TIME)
     def knowledge_evaluation_node(self, state: AgentState):
         messages = state["messages"] + [
-            SystemMessage(content=prompts.PSYCHOLOGY_AGENT_PROMPT),
+            SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
             HumanMessage(
-                content=prompts.KNOWLEDGE_RELEVANCY_EVALUATION_PROMPT.format(
+                content=self.prompts.KNOWLEDGE_RELEVANCY_EVALUATION_PROMPT.format(
                     rag=state["rag_search_results"], web=state["web_search_results"], request=state["request"]
                 )
             ),
@@ -388,7 +391,7 @@ class PsyAgent:
             "last_node": "knowledge_evaluation",
         }
 
-    @timer(name="knowledge_relevancy_evaluation", metric=NODE_RESPONSE_TIME)
+    @timer(name="knowledge_relevancy_evaluation", metric=AGENT_RESPONSE_TIME)
     def knowledge_relevancy_evaluation(self, state: AgentState):
         failure_point = state["knowledge_search_failure_point"]
         counter = state["knowledge_reevaluation_counter"]
@@ -400,15 +403,15 @@ class PsyAgent:
         else:
             return "knowledge_summary"
 
-    @timer(name="knowledge_summary_node", metric=NODE_RESPONSE_TIME)
+    @timer(name="knowledge_summary_node", metric=AGENT_RESPONSE_TIME)
     def knowledge_summary_node(self, state: AgentState):
         rag_search_results = "\n".join(state["rag_search_results"])
         web_search_results = "\n".join(state["web_search_results"])
 
         messages = state["messages"] + [
-            SystemMessage(content=prompts.PSYCHOLOGY_AGENT_PROMPT),
+            SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
             HumanMessage(
-                content=prompts.KNOWLEDGE_SUMMARY_PROMPT.format(
+                content=self.prompts.KNOWLEDGE_SUMMARY_PROMPT.format(
                     rag=rag_search_results, web=web_search_results, request=state["request"]
                 )
             ),
@@ -425,13 +428,13 @@ class PsyAgent:
             "last_node": "knowledge_summary",
         }
 
-    @timer(name="question_answering_node", metric=NODE_RESPONSE_TIME)
+    @timer(name="question_answering_node", metric=AGENT_RESPONSE_TIME)
     def question_answering_node(self, state: AgentState):
         messages = state["messages"] + [
-            SystemMessage(content=prompts.PSYCHOLOGY_AGENT_PROMPT),
-            SystemMessage(content=prompts.THERAPIST_POLICY_PROMPT),
+            SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
+            SystemMessage(content=self.prompts.THERAPIST_POLICY_PROMPT),
             HumanMessage(
-                content=prompts.QUESTION_ANSWERING_PROMPT.format(
+                content=self.prompts.QUESTION_ANSWERING_PROMPT.format(
                     knowledge_summary=state["knowledge_search_summary"], request=state["request"]
                 )
             ),

@@ -82,8 +82,12 @@ docker push psyserviceregistry.azurecr.io/psy-agent
 ## Automatic Deployment
 The repository is configured with **GitHub Actions** for automated deployment. All steps, including Docker build, push, and AKS deployment, are performed automatically upon code changes.
 
-## Monitoring
-- Prometheus + Grafana with Docker compose
+## Monitoring and observability
+- Run `docker compose -f monitoring/docker-compose.yml up`. This will create running containers for following services.
+   - Prometheus on port `9094`. 
+   - Grafana on port `3094`.
+   - Langfuse LLM observability on port `3000`
+- Enabling/disabling monitoring is possible with boolean environment vars `LANGFUSE_MONITORING` and `PROMETHEUS_GRAFANA_MONITORING`.
 
 ## Data drift detection
 TBD
