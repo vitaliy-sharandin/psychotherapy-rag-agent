@@ -14,12 +14,10 @@ ACTION_DETECTION_OPTIONS_WITH_KNOWLEDGE_RETRIEVAL = {
     "clarify": "clarify",
     "knowledge_retrieval": "knowledge_retrieval",
     "question_answering": "question_answering",
-    "end": END,
 }
 ACTION_DETECTION_OPTIONS_NO_KNOWLEDGE_RETRIEVAL = {
     "clarify": "clarify",
     "question_answering": "question_answering",
-    "end": END,
 }
 
 KNOWLEDGE_RELEVANCY_EVALUATION_OPTIONS = {
@@ -35,7 +33,6 @@ ACTION_DETECTION_PROMPT = """
     Understand clearly user request and if you are not quite sure what exactly user wants, return \'clarify\'. Make clear understanding a priority!
     {knowledge_retrieval_prompt}
     If everything is clear and you already have all knowledge needed to address request, return \'question_answering\'.
-    If user provided response which implies all his request are resolved, return \'end\'.
 
     This is an action detection prompt, so respond only with lower-case one word options provided above!
     THIS IS CRITICAL TASK - ONLY RESPOND WITH ONE OF THOSE ONE WORD OPTIONS BELOW. DON\'T RESPOND WITH ANYTHING ELSE, DON\'T EXPLAIN YOURSELF!

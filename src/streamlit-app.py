@@ -57,11 +57,6 @@ def render_feedback_buttons(msg_idx, response_time, msg_langfuse_trace_id):
         args=[msg_idx, msg_langfuse_trace_id],
     )  # type: ignore
 
-    with st.expander("View metrics"):
-        st.metric("Response time", f"{response_time:0.2f}s")
-        feedback = st.session_state.feedback.get(msg_idx, "No feedback yet")
-        st.text(f"Feedback: {feedback}")
-
 
 def output_agent_response(user_input, final_response, session_messages, input_start_time, msg_langfuse_trace_id):
     with st.chat_message("assistant"):

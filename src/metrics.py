@@ -6,33 +6,33 @@ import time
 from prometheus_client import Counter, Histogram, Gauge
 from contextlib import ContextDecorator
 
-# Request metrics
+
 REQUEST_COUNT = Counter(
     "psy_agent_requests_total",
     "Total number of requests to the agent",
-    ["action"],  # action can be clarify, knowledge_retrieval, question_answering etc.
+    ["action"],
 )
 
 REQUEST_LATENCY = Histogram("psy_agent_request_latency_seconds", "Request latency in seconds", ["action"])
 
-# Error metrics
+
 ERROR_COUNT = Counter(
     "psy_agent_errors_total",
     "Total number of errors",
-    ["type"],  # type can be rag_error, web_error, llm_error etc.
+    ["type"],
 )
 
-# User feedback metrics
+
 USER_FEEDBACK = Counter(
     "psy_agent_user_feedback_total",
     "User feedback counts",
-    ["type"],  # type can be thumbs_up or thumbs_down
+    ["type"],
 )
 
 AGENT_RESPONSE_TIME = Histogram(
     "psy_agent_response_time_seconds",
     "Agent response generation time in seconds",
-    ["node"],  # node can be any node in the graph
+    ["node"],
 )
 
 

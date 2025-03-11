@@ -82,15 +82,56 @@ docker push psyserviceregistry.azurecr.io/psy-agent
 ## Automatic Deployment
 The repository is configured with **GitHub Actions** for automated deployment. All steps, including Docker build, push, and AKS deployment, are performed automatically upon code changes.
 
-## Monitoring and observability
+## Monitoring, observability and feedback
 - Run `docker compose -f monitoring/docker-compose.yml up`. This will create running containers for following services.
    - Prometheus on port `9094`. 
    - Grafana on port `3094`.
    - Langfuse LLM observability on port `3000`
 - Enabling/disabling monitoring is possible with boolean environment vars `LANGFUSE_MONITORING` and `PROMETHEUS_GRAFANA_MONITORING`.
 
+## Prometheus + Grafana monitoring
+Variety of metrics are being logged to Prometheus server and displayed by Grafana.
+
+![Metrics](images/metrics.png)
+
+## User feedback
+Agent is able to provide the simplest form of user feedback through thumbs up/down buttons under conversations.
+
+![Feedback](images/feedback.png)
+
+## Langfuse observability
+All conversation threads are being logged to Langfuse observability platform.
+- Session - single conversation thread.
+![Langfuse](images/langfuse_session.png)
+- Trace - single conversation exchange.
+![Langfuse](images/langfuse_traces.png)
+- Observation - single llm generation. In our case Langgraph node step.
+![Langfuse](images/langfuse_observation.png)
+- Scores - feedback from previous step is being logged to 
+![Langfuse](images/langfuse_feedback.png) ![Langfuse](images/langfuse_feedback2.png)
+
 ## Data drift detection
-TBD
+Data drift detection was implemented in a [psychotherapy-model repo](https://github.com/vitaliy-sharandin/psychotherapy-model/tree/main/src/drift-detection).<br>
+Data drift detection was performed with: 
+- The synthetic user prompts on various topics which were different from training dataset.
+- Evidently AI library to detect shift in user input embeddings.
+![Langfuse](images/drift.png)
+- Manual method which listed top 10 prompt topics from both training and simulated datasets as well as topics unique to simulated dataset only. We will use those topics for our model retraining.
+![Topics](images/topics_drift.png)
+![Unique](images/unique_drift.png)
 
 ## Retraining
-TBD
+Now we can use drifted topics to gather data for further model fine-tuning. We can perform that with following steps:<br>
+1. Gather most frequent drifted topics unique to the current dataset.
+1. Extract prompt/response pairs marked by user feedback as "good" or "bad" from Langfuse for topics from previous step.
+1. For good responses:
+   1. Use human annotator to review responses marked as "good".
+   1. If they pass verification, use them in fine-tuning dataset, otherwise correct.
+1. For bad responses:
+   1. Use language model to generate correct responses.
+   1. Use human annotator to verify responses.
+   1. Use the corrected dataset for fine-tuning
+1. For unmarked responses
+   1. Use language model to verify responses and generate correct ones if needed.
+   1. Use human annotator to verify responses.
+1. Gather all prompt/reponse pairs and fine-tune the model.
