@@ -40,7 +40,7 @@ The Streamlit app provides a conversational interface. Users input their queries
 
 ### UV Streamlit run
 - Run command below to launch streamlit agent
-- `uv `
+- `uv run streamlit run src/streamlit-app.py`
 
 ### Build Docker Image
 ```bash

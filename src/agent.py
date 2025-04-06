@@ -39,7 +39,6 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 LANGCHAIN_TRACING_V2 = os.getenv("LANGCHAIN_TRACING_V2", "false")
 LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY", "")
 
-INSTRUCTIONS_MODEL_NAME = os.getenv("INSTRUCTION_MODEL_NAME", "ollama")
 TEXT_GENERATION_MODEL_NAME = os.getenv("TEXT_GENERATION_MODEL_NAME", "ollama")
 
 LLM_API_KEY = os.getenv("LLM_API_KEY", "ollama")
@@ -90,18 +89,23 @@ class WebQueries(BaseModel):
 
 
 class PsyAgent:
-    text_generation_model = ChatOpenAI(
-        model=TEXT_GENERATION_MODEL_NAME, api_key=LLM_API_KEY, base_url=LLM_ADDRESS, temperature=0
+    # text_generation_model = ChatOpenAI(
+    #     model=TEXT_GENERATION_MODEL_NAME, api_key=LLM_API_KEY, base_url=LLM_ADDRESS, temperature=0
+    # )
+    text_generation_model = ChatOllama(
+        model=TEXT_GENERATION_MODEL_NAME
     )
-    instructions_model = ChatOpenAI(
-        model=INSTRUCTIONS_MODEL_NAME, api_key=LLM_API_KEY, base_url=LLM_ADDRESS, temperature=0
+    embedding_model = OllamaEmbedding(model_name="mxbai-embed-large", base_url=EMBEDDING_MODEL_ADDRESS)
+    rag_model = Ollama(
+        model=TEXT_GENERATION_MODEL_NAME
     )
 
     def __init__(
         self,
         config,
-        text_generation_model=text_generation_model,
-        instructions_model=instructions_model,
+        text_generation_model=None,
+        embedding_model=None,
+        rag_model=None,
         knowledge_base_folder=f"{SCRIPT_DIR}/resources/pdf",
         knowledge_retrieval=True,
         web_search_enabled=True,
@@ -111,8 +115,9 @@ class PsyAgent:
         self.prompts = prompts
         self.knowledge_base_folder = knowledge_base_folder
 
-        self.text_generation_model = text_generation_model
-        self.instructions_model = instructions_model
+        self.text_generation_model = text_generation_model or PsyAgent.text_generation_model
+        self.embedding_model = embedding_model or PsyAgent.embedding_model
+        self.rag_model = rag_model or PsyAgent.rag_model
 
         builder = StateGraph(AgentState)
 
@@ -174,7 +179,7 @@ class PsyAgent:
 
     @timer(name="vector_db_creation", metric=AGENT_RESPONSE_TIME)
     def _initialize_vector_store(self):
-        Settings.llm = Ollama(model=TEXT_GENERATION_MODEL_NAME)
+        Settings.llm = self.rag_model
         documents = SimpleDirectoryReader(f"{self.knowledge_base_folder}", filename_as_id=True).load_data()
 
         db = chromadb.PersistentClient(path="./chroma_db")
@@ -182,21 +187,21 @@ class PsyAgent:
 
         vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
         storage_context = StorageContext.from_defaults(vector_store=vector_store)
-        embedding_model = OllamaEmbedding(model_name="mxbai-embed-large", base_url=EMBEDDING_MODEL_ADDRESS)
+        
 
         if chroma_collection.count() == 0:
             vector_store_index = VectorStoreIndex.from_documents(
-                documents, storage_context=storage_context, embed_model=embedding_model
+                documents, storage_context=storage_context, embed_model=self.embedding_model
             )
         else:
-            vector_store_index = VectorStoreIndex.from_vector_store(vector_store, embed_model=embedding_model)
+            vector_store_index = VectorStoreIndex.from_vector_store(vector_store, embed_model=self.embedding_model)
             # TODO Create a proper refresh of db
             # vector_store_index.refresh_ref_docs(documents)
 
         self.query_engine = vector_store_index.as_query_engine()
 
     def _initialize_vector_store_rerank(self):
-        Settings.llm = Ollama(model=TEXT_GENERATION_MODEL_NAME)
+        Settings.llm = self.rag_model
 
         documents = SimpleDirectoryReader(f"{self.knowledge_base_folder}", filename_as_id=True).load_data()
 
@@ -206,14 +211,12 @@ class PsyAgent:
         vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
         storage_context = StorageContext.from_defaults(vector_store=vector_store)
 
-        embedding_model = OllamaEmbedding(model_name="mxbai-embed-large", base_url=EMBEDDING_MODEL_ADDRESS)
-
         if chroma_collection.count() == 0:
             vector_store_index = VectorStoreIndex.from_documents(
-                documents, storage_context=storage_context, embed_model=embedding_model
+                documents, storage_context=storage_context, embed_model=self.embedding_model
             )
         else:
-            vector_store_index = VectorStoreIndex.from_vector_store(vector_store, embed_model=embedding_model)
+            vector_store_index = VectorStoreIndex.from_vector_store(vector_store, embed_model=self.embedding_model)
             # TODO Create a proper refresh of db
             # vector_store_index.refresh_ref_docs(documents)
 
@@ -222,8 +225,8 @@ class PsyAgent:
         self.rerank_query_engine = vector_store_index.as_query_engine(similarity_top_k=6, node_postprocessors=[rerank])
 
     def _initialize_automerging_store(self):
-        Settings.llm = Ollama(model=TEXT_GENERATION_MODEL_NAME)
-        Settings.embed_model = OllamaEmbedding(model_name="mxbai-embed-large", base_url=EMBEDDING_MODEL_ADDRESS)
+        Settings.llm = self.rag_model
+        Settings.embed_model = self.embedding_model
         documents = SimpleDirectoryReader(f"{self.knowledge_base_folder}", filename_as_id=True).load_data()
 
         chunk_sizes = [2048, 512, 128]
@@ -263,7 +266,7 @@ class PsyAgent:
                 )
             ),
         ]
-        response = self.instructions_model.invoke(messages)
+        response = self.text_generation_model.invoke(messages)
 
         return {"request": user_request, "action": response.content, "last_node": "action_selector"}
 
@@ -287,7 +290,7 @@ class PsyAgent:
         web_queries = state["web_queries"]
 
         if state["knowledge_search_failure_point"] == "both":
-            queries = self.instructions_model.with_structured_output(Queries).invoke(
+            queries = self.text_generation_model.with_structured_output(Queries).invoke(
                 [
                     SystemMessage(
                         content=self.prompts.QUERIES_REGENERATION_PROMPT.format(
@@ -300,7 +303,7 @@ class PsyAgent:
             rag_queries = ast.literal_eval(queries.rag_queries) if queries.rag_queries else []
             web_queries = ast.literal_eval(queries.web_queries) if queries.web_queries else []
         elif state["knowledge_search_failure_point"] == "rag":
-            queries = self.instructions_model.with_structured_output(RagQueries).invoke(
+            queries = self.text_generation_model.with_structured_output(RagQueries).invoke(
                 [
                     SystemMessage(
                         content=self.prompts.RAG_RENENERATION_PROMPT.format(
@@ -312,7 +315,7 @@ class PsyAgent:
             )
             rag_queries = ast.literal_eval(queries.rag_queries) if queries.rag_queries else []
         elif state["knowledge_search_failure_point"] == "web":
-            queries = self.instructions_model.with_structured_output(WebQueries).invoke(
+            queries = self.text_generation_model.with_structured_output(WebQueries).invoke(
                 [
                     SystemMessage(
                         content=self.prompts.WEB_REGENERATION_PROMPT.format(
@@ -324,7 +327,7 @@ class PsyAgent:
             )
             web_queries = ast.literal_eval(queries.web_queries) if queries.web_queries else []
         else:
-            queries = self.instructions_model.with_structured_output(Queries).invoke(
+            queries = self.text_generation_model.with_structured_output(Queries).invoke(
                 [SystemMessage(content=self.prompts.QUERIES_GENERATION_PROMPT), HumanMessage(content=state["request"])]
             )
             rag_queries = ast.literal_eval(queries.rag_queries) if queries.rag_queries else []
@@ -367,7 +370,7 @@ class PsyAgent:
             ),
         ]
 
-        response = self.instructions_model.invoke(messages)
+        response = self.text_generation_model.invoke(messages)
 
         failure_point = response.content
         counter = state["knowledge_reevaluation_counter"]
@@ -417,7 +420,7 @@ class PsyAgent:
             ),
         ]
 
-        response = self.instructions_model.invoke(messages)
+        response = self.text_generation_model.invoke(messages)
 
         return {
             "knowledge_search_summary": response.content,
