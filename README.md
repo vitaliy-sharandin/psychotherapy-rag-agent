@@ -79,7 +79,7 @@ docker push psyserviceregistry.azurecr.io/psy-agent
    kubectl apply -f k8s/deploy.yml
    ```
 
-## Automatic Deployment
+## CI/CD pipeline
 The repository is configured with **GitHub Actions** for automated deployment. All steps, including Docker build, push, and AKS deployment, are performed automatically upon code changes.
 
 ## Monitoring, observability and feedback
