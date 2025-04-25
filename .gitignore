@@ -8,3 +8,4 @@ chroma_db
 __pycache__
 default.sqlite
 merging_index
+.deepeval*

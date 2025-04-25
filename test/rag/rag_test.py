@@ -1,24 +1,24 @@
 import os
 import sys
+import uuid
 
 import pytest
-import uuid
-from ragas import EvaluationDataset
 import yaml
-from langfuse.llama_index import LlamaIndexInstrumentor
 from langfuse import Langfuse
-from src.agent import PsyAgent
-from ragas.metrics import faithfulness, answer_relevancy, ContextUtilization, context_recall
-from ragas.integrations.llama_index import evaluate
+from langfuse.client import DatasetStatus
 from langfuse.llama_index import LlamaIndexInstrumentor
+from ragas import EvaluationDataset
+from ragas.integrations.llama_index import evaluate
+from ragas.metrics import ContextUtilization, answer_relevancy, context_recall, faithfulness
+
+from src.agent import PsyAgent
 
 RESOURCE_FOLDER = os.path.abspath(os.path.join(os.path.dirname(__file__), "../resources/rag"))
 
 
 @pytest.fixture(scope="module")
 def agent():
-    config = {"configurable": {"thread_id": "1"}}
-    return PsyAgent(config, knowledge_base_folder=f"{RESOURCE_FOLDER}/pdf", web_search_enabled=False, debug=True)
+    return PsyAgent(knowledge_base_folder=f"{RESOURCE_FOLDER}/pdf", web_search_enabled=False, debug=True)
 
 
 @pytest.fixture(scope="module")
@@ -36,15 +36,15 @@ def langfuse_client():
 
 
 def test_query_engine(agent, query_engines, langfuse_client):
-    dataset = langfuse_client.get_dataset("eval_dataset")
+    dataset = langfuse_client.get_dataset("rag_test_dataset")
     instrumentor = LlamaIndexInstrumentor()
 
-    for item in [dataset.items[0]]:
-
+    # TODO perform for more than one item
+    for item in filter(lambda item: item.status == DatasetStatus.ACTIVE, dataset.items):
         trace_id = str(uuid.uuid4())
 
         # TODO substitute everything with instrumentor
-        with instrumentor.observe(trace_id=trace_id), item.observe(run_name='rag_eval', trace_id=trace_id):
+        with instrumentor.observe(trace_id=trace_id), item.observe(run_name="rag_eval", trace_id=trace_id):
             metrics = [
                 faithfulness,
                 answer_relevancy,
@@ -62,7 +62,11 @@ def test_query_engine(agent, query_engines, langfuse_client):
 
             langfuse_client.score(trace_id=trace_id, name="faithfulness", value=result.scores[0]["faithfulness"])
 
-            langfuse_client.score(trace_id=trace_id, name="answer_relevancy", value=result.scores[0]["answer_relevancy"])
+            langfuse_client.score(
+                trace_id=trace_id, name="answer_relevancy", value=result.scores[0]["answer_relevancy"]
+            )
 
-            langfuse_client.score(trace_id=trace_id, name="context_precision_no_ref", value=result.scores[0]["context_utilization"])
+            langfuse_client.score(
+                trace_id=trace_id, name="context_precision_no_ref", value=result.scores[0]["context_utilization"]
+            )
     langfuse_client.flush()

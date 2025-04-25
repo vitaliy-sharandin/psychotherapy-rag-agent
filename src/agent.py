@@ -1,19 +1,23 @@
 import ast
+import logging
 import os
 import sqlite3
 from typing import Annotated, List, TypedDict
 
 import chromadb
 from dotenv import load_dotenv
-from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
+from langchain.tools.base import StructuredTool
+from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.pydantic_v1 import BaseModel, Field
 from langchain_core.tools import tool
+from langchain_core.tools.base import InjectedToolCallId
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt import InjectedState, ToolNode
+from langgraph.types import Command
 from langsmith import traceable
 from langsmith.wrappers import wrap_openai
 from llama_index.core import Settings, SimpleDirectoryReader, StorageContext, VectorStoreIndex, load_index_from_storage
@@ -29,7 +33,8 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 from tavily import TavilyClient
 
 import prompts
-from metrics import REQUEST_COUNT, REQUEST_LATENCY, AGENT_RESPONSE_TIME, timer
+from exception_handling import graceful_exceptions
+from metrics import AGENT_RESPONSE_TIME, REQUEST_COUNT, REQUEST_LATENCY, timer
 
 load_dotenv()
 
@@ -56,15 +61,7 @@ class AgentState(TypedDict):
     action: str
     last_node: str
 
-    rag_queries: List[str]
-    web_queries: List[str]
-
-    rag_search_results: str
-    web_search_results: str
-
-    knowledge_search_summary: str
-    knowledge_search_failure_point: str
-    knowledge_reevaluation_counter: int
+    tool_usage_counter: int
 
     messages: Annotated[list[AnyMessage], add_messages]
 
@@ -89,37 +86,65 @@ class WebQueries(BaseModel):
 
 
 class PsyAgent:
-    # text_generation_model = ChatOpenAI(
-    #     model=TEXT_GENERATION_MODEL_NAME, api_key=LLM_API_KEY, base_url=LLM_ADDRESS, temperature=0
-    # )
-    text_generation_model = ChatOllama(
-        model=TEXT_GENERATION_MODEL_NAME
+    text_generation_model_vllm = ChatOpenAI(
+        model=TEXT_GENERATION_MODEL_NAME, api_key=LLM_API_KEY, base_url=LLM_ADDRESS, temperature=0
     )
-    embedding_model = OllamaEmbedding(model_name="mxbai-embed-large", base_url=EMBEDDING_MODEL_ADDRESS)
-    rag_model = Ollama(
-        model=TEXT_GENERATION_MODEL_NAME
-    )
+    text_generation_model = ChatOllama(model=TEXT_GENERATION_MODEL_NAME)
+    embedding_model = OllamaEmbedding(model_name="mxbai-embed-large")
+    rag_model = Ollama(model=TEXT_GENERATION_MODEL_NAME)
+
+    MAX_TOOL_LOOPS = 3
 
     def __init__(
         self,
-        config,
         text_generation_model=None,
+        vllm_model=False,
         embedding_model=None,
         rag_model=None,
         knowledge_base_folder=f"{SCRIPT_DIR}/resources/pdf",
         knowledge_retrieval=True,
         web_search_enabled=True,
         rag_search_enabled=True,
+        tools=[],
         debug=False,
     ):
         self.prompts = prompts
         self.knowledge_base_folder = knowledge_base_folder
 
-        self.text_generation_model = text_generation_model or PsyAgent.text_generation_model
+        if vllm_model:
+            self.text_generation_model = text_generation_model or PsyAgent.text_generation_model_vllm
+        else:
+            self.text_generation_model = text_generation_model or PsyAgent.text_generation_model
+
         self.embedding_model = embedding_model or PsyAgent.embedding_model
         self.rag_model = rag_model or PsyAgent.rag_model
 
         builder = StateGraph(AgentState)
+
+        enabled_tools = []
+
+        if knowledge_retrieval:
+            if web_search_enabled:
+                enabled_tools += [StructuredTool.from_function(self.web_search)]
+                self.tavily = TavilyClient(api_key=TAVILY_API_KEY)
+
+            if rag_search_enabled:
+                enabled_tools += [StructuredTool.from_function(self.rag_search)]
+                self._initialize_vector_store()
+                # self._initialize_vector_store_rerank()
+                # self._initialize_automerging_store()
+
+            if tools:
+                enabled_tools = [StructuredTool.from_function(tool) for tool in tools]
+
+            self.tool_node = ToolNode(enabled_tools)
+            builder.add_node("tools", self.tool_node)
+
+        else:
+            self.tool_node = ToolNode(enabled_tools)
+            builder.add_node("tools", self.tool_node)
+
+        self.text_generation_model = self.text_generation_model.bind_tools(enabled_tools)
 
         builder.add_node("action_selector", self.action_selector_node)
         builder.add_node("clarify", self.clarify_node)
@@ -127,46 +152,10 @@ class PsyAgent:
 
         builder.set_entry_point("action_selector")
 
-        if knowledge_retrieval:
-            self.prompts.ACTION_DETECTION_PROMPT = self.prompts.ACTION_DETECTION_PROMPT.format(
-                knowledge_retrieval_prompt=self.prompts.KNOWLEDGE_RETRIEVAL_PROMPT
-            )
-            action_detection_options = self.prompts.ACTION_DETECTION_OPTIONS_WITH_KNOWLEDGE_RETRIEVAL
-
-            builder.add_node("knowledge_retrieval", self.knowledge_retrieval_node)
-            builder.add_node("knowledge_evaluation", self.knowledge_evaluation_node)
-            builder.add_node("knowledge_summary", self.knowledge_summary_node)
-
-            if web_search_enabled:
-                builder.add_node("web", self.web_search_node)
-                builder.add_edge("knowledge_retrieval", "web")
-                builder.add_edge("web", "knowledge_evaluation")
-                self.tavily = TavilyClient(api_key=TAVILY_API_KEY)
-
-            if rag_search_enabled:
-                builder.add_node("rag", self.rag_search_node)
-                builder.add_edge("knowledge_retrieval", "rag")
-                builder.add_edge("rag", "knowledge_evaluation")
-
-                self._initialize_vector_store()
-                # self._initialize_vector_store_rerank()
-                # self._initialize_automerging_store()
-
-            builder.add_edge("knowledge_summary", "question_answering")
-            builder.add_conditional_edges(
-                "knowledge_evaluation",
-                self.knowledge_relevancy_evaluation,
-                self.prompts.KNOWLEDGE_RELEVANCY_EVALUATION_OPTIONS,
-            )
-        else:
-            self.prompts.ACTION_DETECTION_PROMPT = self.prompts.ACTION_DETECTION_PROMPT.format(
-                knowledge_retrieval_prompt=""
-            )
-            action_detection_options = self.prompts.ACTION_DETECTION_OPTIONS_NO_KNOWLEDGE_RETRIEVAL
-
-        builder.add_conditional_edges("action_selector", self.select_action, action_detection_options)
+        builder.add_conditional_edges("action_selector", self.select_action, self.prompts.ACTION_DETECTION_OPTIONS)
 
         builder.add_edge("clarify", "action_selector")
+        builder.add_edge("tools", "action_selector")
         builder.add_edge("question_answering", "action_selector")
 
         conn = sqlite3.connect(":memory:", check_same_thread=False)
@@ -175,7 +164,61 @@ class PsyAgent:
         self.graph = builder.compile(
             checkpointer=checkpointer, interrupt_after=["clarify", "question_answering"], debug=debug
         )
-        self.graph.update_state(config, {"knowledge_search_summary": "", "knowledge_reevaluation_counter": 0})
+
+    def rag_search(
+        self,
+        tool_call_id: Annotated[str, InjectedToolCallId],
+        request: str,
+    ):
+        """
+        RAG search through local documents vector database based on user request.
+
+        Args:
+            request (str): User request.
+        """
+
+        # TODO break down request into multiple queries using QUERIES_GENERATION_PROMPT
+        # rag_results = []
+        # for rag_search_query in state["rag_queries"]:
+        #     result = state["query_engine"].query(rag_search_query)
+        #     rag_results.append(result.response)
+
+        result = self.query_engine.query(request)
+
+        return Command(
+            update={
+                "rag_search_results": str(result.response),
+                "messages": [ToolMessage(result.response, tool_call_id=tool_call_id)],
+            }
+        )
+
+    def web_search(
+        self,
+        tool_call_id: Annotated[str, InjectedToolCallId],
+        request: str,
+    ):
+        """Searches web for information based on user's request.
+
+        Args:
+            request (str): User request.
+        """
+
+        # TODO break down request into multiple queries using QUERIES_GENERATION_PROMPT
+        # search_results = []
+        # for q in state["web_queries"]:
+        #     response = state["tavily"].search(query=q, max_results=2)
+        #     for r in response["results"]:
+        #         search_results.append(r["content"])
+
+        response = self.tavily.search(query=request, max_results=2)
+        search_results = [r["content"] for r in response["results"]]
+
+        return Command(
+            update={
+                "web_search_results": str(search_results),
+                "messages": [ToolMessage(search_results, tool_call_id=tool_call_id)],
+            }
+        )
 
     @timer(name="vector_db_creation", metric=AGENT_RESPONSE_TIME)
     def _initialize_vector_store(self):
@@ -187,7 +230,6 @@ class PsyAgent:
 
         vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
         storage_context = StorageContext.from_defaults(vector_store=vector_store)
-        
 
         if chroma_collection.count() == 0:
             vector_store_index = VectorStoreIndex.from_documents(
@@ -258,19 +300,32 @@ class PsyAgent:
     def action_selector_node(self, state: AgentState):
         user_request = state["messages"][-1].content
 
-        messages = state["messages"] + [
-            SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
-            HumanMessage(
-                content=self.prompts.ACTION_DETECTION_PROMPT.format(
-                    knowledge=state["knowledge_search_summary"], prompt=user_request
-                )
-            ),
-        ]
-        response = self.text_generation_model.invoke(messages)
+        try:
+            messages = state["messages"] + [
+                SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
+                HumanMessage(content=self.prompts.ACTION_DETECTION_PROMPT.format(prompt=user_request)),
+            ]
+            response = self.text_generation_model.invoke(messages)
 
-        return {"request": user_request, "action": response.content, "last_node": "action_selector"}
+            return {
+                "request": user_request,
+                "action": response.content,
+                "last_node": "action_selector",
+                "messages": [response],
+            }
+        except Exception as e:
+            logging.error(f"Error in action_selector_node: {e}")
+            return {
+                "request": user_request,
+                "action": "clarify",
+                "last_node": "action_selector",
+            }
 
     def select_action(self, state: AgentState):
+        if state["messages"][-1].tool_calls and state["tool_usage_counter"] < PsyAgent.MAX_TOOL_LOOPS:
+            return "tools"
+        elif state["messages"][-1].tool_calls and state["tool_usage_counter"] >= PsyAgent.MAX_TOOL_LOOPS:
+            return "question_answering"
         return state["action"]
 
     @timer(name="clarify_node", metric=AGENT_RESPONSE_TIME)
@@ -284,83 +339,9 @@ class PsyAgent:
         response = self.text_generation_model.invoke(messages)
         return {"messages": [response], "last_node": "clarify"}
 
-    @timer(name="knowledge_retrieval_node", metric=AGENT_RESPONSE_TIME)
-    def knowledge_retrieval_node(self, state: AgentState):
-        rag_queries = state["rag_queries"]
-        web_queries = state["web_queries"]
-
-        if state["knowledge_search_failure_point"] == "both":
-            queries = self.text_generation_model.with_structured_output(Queries).invoke(
-                [
-                    SystemMessage(
-                        content=self.prompts.QUERIES_REGENERATION_PROMPT.format(
-                            rag=state["rag_queries"], web=state["web_queries"], request=state["request"]
-                        )
-                    ),
-                    HumanMessage(content=state["request"]),
-                ]
-            )
-            rag_queries = ast.literal_eval(queries.rag_queries) if queries.rag_queries else []
-            web_queries = ast.literal_eval(queries.web_queries) if queries.web_queries else []
-        elif state["knowledge_search_failure_point"] == "rag":
-            queries = self.text_generation_model.with_structured_output(RagQueries).invoke(
-                [
-                    SystemMessage(
-                        content=self.prompts.RAG_RENENERATION_PROMPT.format(
-                            rag=state["rag_queries"], request=state["request"]
-                        )
-                    ),
-                    HumanMessage(content=state["request"]),
-                ]
-            )
-            rag_queries = ast.literal_eval(queries.rag_queries) if queries.rag_queries else []
-        elif state["knowledge_search_failure_point"] == "web":
-            queries = self.text_generation_model.with_structured_output(WebQueries).invoke(
-                [
-                    SystemMessage(
-                        content=self.prompts.WEB_REGENERATION_PROMPT.format(
-                            web=state["web_queries"], request=state["request"]
-                        )
-                    ),
-                    HumanMessage(content=state["request"]),
-                ]
-            )
-            web_queries = ast.literal_eval(queries.web_queries) if queries.web_queries else []
-        else:
-            queries = self.text_generation_model.with_structured_output(Queries).invoke(
-                [SystemMessage(content=self.prompts.QUERIES_GENERATION_PROMPT), HumanMessage(content=state["request"])]
-            )
-            rag_queries = ast.literal_eval(queries.rag_queries) if queries.rag_queries else []
-            web_queries = ast.literal_eval(queries.web_queries) if queries.web_queries else []
-        return {"rag_queries": rag_queries, "web_queries": web_queries, "last_node": "knowledge_retrieval"}
-
-    @timer(name="rag_search_node", metric=AGENT_RESPONSE_TIME)
-    def rag_search_node(self, state: AgentState):
-        """RAG search through local documents vector database based on user request"""
-
-        if not state["knowledge_search_failure_point"] or not state["knowledge_search_failure_point"] == "web":
-            rag_results = []
-            for rag_search_query in state["rag_queries"]:
-                result = self.query_engine.query(rag_search_query)
-                rag_results.append(result.response)
-            return {"rag_search_results": rag_results}
-        return {"rag_search_results": []}
-
-    @timer(name="web_search_node", metric=AGENT_RESPONSE_TIME)
-    def web_search_node(self, state: AgentState):
-        """Searches web for information based on user's request"""
-
-        if not state["knowledge_search_failure_point"] or not state["knowledge_search_failure_point"] == "rag":
-            search_results = []
-            for q in state["web_queries"]:
-                response = self.tavily.search(query=q, max_results=2)
-                for r in response["results"]:
-                    search_results.append(r["content"])
-            return {"web_search_results": search_results}
-        return {"web_search_results": []}
-
     @timer(name="knowledge_evaluation_node", metric=AGENT_RESPONSE_TIME)
     def knowledge_evaluation_node(self, state: AgentState):
+        # Evaluate the knowledge search results and determine if they are relevant
         messages = state["messages"] + [
             SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
             HumanMessage(
@@ -370,65 +351,18 @@ class PsyAgent:
             ),
         ]
 
-        response = self.text_generation_model.invoke(messages)
+        rag_results = state["rag_search_results"] if state["rag_search_results"] else ""
+        web_results = state["web_search_results"] if state["web_search_results"] else ""
 
-        failure_point = response.content
-        counter = state["knowledge_reevaluation_counter"]
-        counter += 1
-        web_search_results = state["web_search_results"]
-        rag_search_results = state["rag_search_results"]
+        # Call ToolNode to evaluate the knowledge search results
+        # response = self.tool_node.invoke(messages)
 
-        if failure_point == "web":
-            web_search_results = []
-        elif failure_point == "rag":
-            rag_search_results = []
-        elif failure_point == "both":
-            web_search_results = []
-            rag_search_results = []
-
+        # Repeat 3 times if the evaluation fails
         return {
-            "knowledge_search_failure_point": failure_point,
-            "knowledge_reevaluation_counter": counter,
-            "web_search_results": web_search_results,
-            "rag_search_results": rag_search_results,
+            "web_search_results": web_results,
+            "rag_search_results": rag_results,
+            "tool_usage_counter": state["tool_usage_counter"] + 1,
             "last_node": "knowledge_evaluation",
-        }
-
-    @timer(name="knowledge_relevancy_evaluation", metric=AGENT_RESPONSE_TIME)
-    def knowledge_relevancy_evaluation(self, state: AgentState):
-        failure_point = state["knowledge_search_failure_point"]
-        counter = state["knowledge_reevaluation_counter"]
-
-        if not failure_point == "none" and counter <= 3:
-            return "knowledge_retrieval"
-        elif failure_point == "both":
-            return "question_answering"
-        else:
-            return "knowledge_summary"
-
-    @timer(name="knowledge_summary_node", metric=AGENT_RESPONSE_TIME)
-    def knowledge_summary_node(self, state: AgentState):
-        rag_search_results = "\n".join(state["rag_search_results"])
-        web_search_results = "\n".join(state["web_search_results"])
-
-        messages = state["messages"] + [
-            SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
-            HumanMessage(
-                content=self.prompts.KNOWLEDGE_SUMMARY_PROMPT.format(
-                    rag=rag_search_results, web=web_search_results, request=state["request"]
-                )
-            ),
-        ]
-
-        response = self.text_generation_model.invoke(messages)
-
-        return {
-            "knowledge_search_summary": response.content,
-            "knowledge_reevaluation_counter": 0,
-            "knowledge_search_failure_point": None,
-            "rag_search_results": [],
-            "web_search_results": [],
-            "last_node": "knowledge_summary",
         }
 
     @timer(name="question_answering_node", metric=AGENT_RESPONSE_TIME)
@@ -436,34 +370,54 @@ class PsyAgent:
         messages = state["messages"] + [
             SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
             SystemMessage(content=self.prompts.THERAPIST_POLICY_PROMPT),
-            HumanMessage(
-                content=self.prompts.QUESTION_ANSWERING_PROMPT.format(
-                    knowledge_summary=state["knowledge_search_summary"], request=state["request"]
-                )
-            ),
+            HumanMessage(content=self.prompts.QUESTION_ANSWERING_PROMPT.format(request=state["request"])),
         ]
 
         response = self.text_generation_model.invoke(messages)
         return {"messages": [response], "last_node": "question_answering"}
 
     def draw_graph(self):
-        from IPython.display import Image
+        from langchain_core.runnables.graph import CurveStyle
 
-        return Image(self.graph.get_graph().draw_mermaid_png(output_file_path="./graph.png"))
+        with open("graph.png", "wb") as f:
+            f.write(self.graph.get_graph().draw_mermaid_png(curve_style=CurveStyle.NATURAL))
 
-    def initial_invocation(self, input, config):
-        user_input = HumanMessage(content=input)
-        for event in self.graph.stream({"messages": [user_input]}, config, stream_mode="values"):
-            if event["messages"]:
-                event["messages"][-1].pretty_print()
+    def run_agent_with_messages(self, input_messages: list, config):
+        for user_message in input_messages:
+            if (
+                "last_node" not in self.graph.get_state(config).values
+                or not self.graph.get_state(config).values["last_node"]
+            ):
+                self.graph.update_state(
+                    config,
+                    {
+                        "request": "",
+                        "action": "",
+                        "last_node": "",
+                        "tool_usage_counter": 0,
+                    },
+                )
+                user_input = HumanMessage(content=user_message)
+                for event in self.graph.stream({"messages": [user_input]}, config, stream_mode="values"):
+                    print(f"\n {event}")
+                    # event["messages"][-1].pretty_print()
+            else:
+                user_response = HumanMessage(content=user_message)
 
-    def human_assisted_input_loop(self, input, config):
-        while True:
-            user_response = HumanMessage(content=input)
+                last_node = self.graph.get_state(config).values["last_node"]
+                self.graph.update_state(config, {"messages": [user_response]}, as_node=last_node)
 
-            last_node = self.graph.get_state(config).values["last_node"]
-            self.graph.update_state(config, {"messages": [user_response]}, as_node=last_node)
+                for event in self.graph.stream(None, config, stream_mode="values"):
+                    print(f"\n {event}")
+                    # event["messages"][-1].pretty_print()
 
-            for event in self.graph.stream(None, config, stream_mode="values"):
-                if event["messages"]:
-                    event["messages"][-1].pretty_print()
+
+if __name__ == "__main__":
+    agent = PsyAgent(
+        debug=True,
+    )
+    # agent.run_agent_with_messages(
+    #     ["Search info on founders personality correlation with success in rag db. Don't clarify, just do it."],
+    #     {"configurable": {"thread_id": "1"}},
+    # )
+    agent.draw_graph()

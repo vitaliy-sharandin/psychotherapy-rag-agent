@@ -9,7 +9,7 @@ The Psy AI assistant is built using the locally hosted Ollama Llama 3.1 8b model
 
 ### LangGraph Architecture
 
-The internal logic of the agent is based on LangGraph framework. This graph controls the flow of actions, retrievals, and state management. The agent dynamically updates its knowledge and state as it interacts with the user.
+The internal logic of the agent is based on LangGraph framework. This graph controls the flow of actions, retrievals, and state management. The agent dynamically updates its knowledge and state as it interacts with the user and tools at disposal.
 
 ![LangGraph Structure](images/graph.png)
 
@@ -39,6 +39,22 @@ The Streamlit app provides a conversational interface. Users input their queries
 - Generate [Tavily API key](https://app.tavily.com/)
 
 ### UV Streamlit run
+- Create an env file at the root of project with vars depending on your intended use.
+```
+TAVILY_API_KEY=
+LANGCHAIN_TRACING_V2=
+LANGCHAIN_API_KEY=
+TEXT_GENERATION_MODEL_NAME=
+LLM_ADDRESS=
+EMBEDDING_MODEL_ADDRESS=
+PROMETHEUS_ENABLED=
+PROMETHEUS_BIND_ADDRESS=
+LANGFUSE_MONITORING=
+PROMETHEUS_GRAFANA_MONITORING=
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_SECRET_KEY=
+LANGFUSE_HOST=
+```
 - Run command below to launch streamlit agent
 - `uv run streamlit run src/streamlit-app.py`
 

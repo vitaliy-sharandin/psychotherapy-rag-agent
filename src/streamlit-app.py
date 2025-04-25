@@ -98,7 +98,7 @@ def get_config():
 def render_message_history():
     if "messages" not in st.session_state:
         st.session_state.messages = []
-        st.session_state.agent = PsyAgent({"configurable": {"thread_id": "1"}}, knowledge_retrieval=False, debug=True)
+        st.session_state.agent = PsyAgent(debug=True)
 
     for idx, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
@@ -127,6 +127,16 @@ def run_agent():
         if "last_node" not in session_agent.graph.get_state(config).values:
             with st.spinner("Thinking..."):
                 REQUEST_LATENCY.labels("total").observe(time.time() - input_start_time)
+
+                session_agent.graph.update_state(
+                    config,
+                    {
+                        "request": "",
+                        "action": "",
+                        "last_node": "",
+                        "tool_usage_counter": 0,
+                    },
+                )
 
                 final_response = None
                 for event in session_agent.graph.stream({"messages": [user_prompt]}, config, stream_mode="values"):
