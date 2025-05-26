@@ -4,8 +4,8 @@ Psy AI is an agent that leverages local Ollama Llama 3.1 8b model together with 
 
 ## Components
 
-### Local Ollama Llama 3.1 8b Agent (agent.py)
-The Psy AI assistant is built using the locally hosted Ollama Llama 3.1 8b model, which serves as the foundational language model for the system. Tests were conducted using Nvidia Geforce RTX 4090, which provided low latency during model interactions. If you wish, you can substitute the default model with any desired one, whether based on API or local.
+### Local Ollama Qwen 2.5 14b Agent (agent.py)
+The Psy AI assistant is built using the locally hosted Qwen 2.5 14b model, which serves as the foundational language model for the system. Tests were conducted using Nvidia Geforce RTX 4090, which provided low latency during model interactions. If you wish, you can substitute the default model with any desired one, whether based on API or local.
 
 ### LangGraph Architecture
 

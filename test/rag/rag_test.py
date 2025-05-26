@@ -24,8 +24,6 @@ def agent():
 @pytest.fixture(scope="module")
 def query_engines(agent):
     return {
-        # "automerging_engine": agent.automerging_query_engine,
-        # "rerank_engine": agent.rerank_query_engine,
         "basic_engine": agent.query_engine,
     }
 
@@ -39,7 +37,6 @@ def test_query_engine(agent, query_engines, langfuse_client):
     dataset = langfuse_client.get_dataset("rag_test_dataset")
     instrumentor = LlamaIndexInstrumentor()
 
-    # TODO perform for more than one item
     for item in filter(lambda item: item.status == DatasetStatus.ACTIVE, dataset.items):
         trace_id = str(uuid.uuid4())
 

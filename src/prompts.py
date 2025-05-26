@@ -24,17 +24,14 @@ ACTION_DETECTION_PROMPT = """
     Follow user instructions as closely as possible.
 
     Action options as content response:
-    'clarify' - ask user to clarify his request, if you are not sure what he wants, unless user tells you he doesn't have additional info.
+    'clarify' - ask user to clarify his request, if you are not sure what he wants, unless user tells you he doesn't have additional info or  it's all you need to know.
     'question_answering' - if you are sure that you already have all necessary knowledge to answer question.
-    Note: This is an action detection prompt, so respond only with lower-case one word options provided above!
-
-    Tools:
-    Use all appropriate tools you have available if needed.
+    Note: This is an action detection prompt, so respond only with lower-case one word options provided above or use tools!
 
     <INSTRUCTIONS_END>
 
     <USER_REQUEST_START>
-    {{prompt}}
+    {prompt}
     <USER_REQUEST_END>
     """
 

@@ -33,7 +33,6 @@ from llama_index.vector_stores.chroma import ChromaVectorStore
 from tavily import TavilyClient
 
 import prompts
-from exception_handling import graceful_exceptions
 from metrics import AGENT_RESPONSE_TIME, REQUEST_COUNT, REQUEST_LATENCY, timer
 
 load_dotenv()
@@ -132,7 +131,6 @@ class PsyAgent:
                 enabled_tools += [StructuredTool.from_function(self.rag_search)]
                 self._initialize_vector_store()
                 # self._initialize_vector_store_rerank()
-                # self._initialize_automerging_store()
 
             if tools:
                 enabled_tools = [StructuredTool.from_function(tool) for tool in tools]
@@ -177,18 +175,12 @@ class PsyAgent:
             request (str): User request.
         """
 
-        # TODO break down request into multiple queries using QUERIES_GENERATION_PROMPT
-        # rag_results = []
-        # for rag_search_query in state["rag_queries"]:
-        #     result = state["query_engine"].query(rag_search_query)
-        #     rag_results.append(result.response)
-
         result = self.query_engine.query(request)
 
         return Command(
             update={
                 "rag_search_results": str(result.response),
-                "messages": [ToolMessage(result.response, tool_call_id=tool_call_id)],
+                "messages": [ToolMessage(str(result.response), tool_call_id=tool_call_id)],
             }
         )
 
@@ -203,20 +195,13 @@ class PsyAgent:
             request (str): User request.
         """
 
-        # TODO break down request into multiple queries using QUERIES_GENERATION_PROMPT
-        # search_results = []
-        # for q in state["web_queries"]:
-        #     response = state["tavily"].search(query=q, max_results=2)
-        #     for r in response["results"]:
-        #         search_results.append(r["content"])
-
         response = self.tavily.search(query=request, max_results=2)
         search_results = [r["content"] for r in response["results"]]
 
         return Command(
             update={
                 "web_search_results": str(search_results),
-                "messages": [ToolMessage(search_results, tool_call_id=tool_call_id)],
+                "messages": [ToolMessage(str(search_results), tool_call_id=tool_call_id)],
             }
         )
 
@@ -238,7 +223,7 @@ class PsyAgent:
         else:
             vector_store_index = VectorStoreIndex.from_vector_store(vector_store, embed_model=self.embedding_model)
             # TODO Create a proper refresh of db
-            # vector_store_index.refresh_ref_docs(documents)
+            vector_store_index.refresh_ref_docs(documents)
 
         self.query_engine = vector_store_index.as_query_engine()
 
@@ -260,66 +245,28 @@ class PsyAgent:
         else:
             vector_store_index = VectorStoreIndex.from_vector_store(vector_store, embed_model=self.embedding_model)
             # TODO Create a proper refresh of db
-            # vector_store_index.refresh_ref_docs(documents)
+            vector_store_index.refresh_ref_docs(documents)
 
         rerank = FlagEmbeddingReranker(top_n=2, model="BAAI/bge-reranker-base")
 
         self.rerank_query_engine = vector_store_index.as_query_engine(similarity_top_k=6, node_postprocessors=[rerank])
 
-    def _initialize_automerging_store(self):
-        Settings.llm = self.rag_model
-        Settings.embed_model = self.embedding_model
-        documents = SimpleDirectoryReader(f"{self.knowledge_base_folder}", filename_as_id=True).load_data()
-
-        chunk_sizes = [2048, 512, 128]
-        node_parser = HierarchicalNodeParser.from_defaults(chunk_sizes=chunk_sizes)
-        nodes = node_parser.get_nodes_from_documents(documents)
-
-        leaf_nodes = get_leaf_nodes(nodes)
-
-        docstore = SimpleDocumentStore()
-        docstore.add_documents(nodes)
-
-        if not os.path.exists("merging_index"):
-            storage_context = StorageContext.from_defaults(docstore=docstore)
-            automerging_index = VectorStoreIndex(leaf_nodes, storage_context=storage_context, store_nodes_override=True)
-            automerging_index.storage_context.persist(persist_dir="merging_index")
-        else:
-            storage_context = StorageContext.from_defaults(persist_dir="merging_index")
-            automerging_index = load_index_from_storage(storage_context)
-            # TODO Create a proper refresh of db
-
-        base_retriever = automerging_index.as_retriever(similarity_top_k=6)
-        retriever = AutoMergingRetriever(base_retriever, automerging_index.storage_context, verbose=True)
-
-        rerank = SentenceTransformerRerank(top_n=2, model="BAAI/bge-reranker-base")
-
-        self.automerging_query_engine = RetrieverQueryEngine.from_args(retriever, node_postprocessors=[rerank])
-
     @timer(name="action_selector_node", metric=AGENT_RESPONSE_TIME)
     def action_selector_node(self, state: AgentState):
-        user_request = state["messages"][-1].content
+        user_request = self.get_last_human_message(state)
 
-        try:
-            messages = state["messages"] + [
-                SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
-                HumanMessage(content=self.prompts.ACTION_DETECTION_PROMPT.format(prompt=user_request)),
-            ]
-            response = self.text_generation_model.invoke(messages)
+        messages = state["messages"] + [
+            SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
+            HumanMessage(content=self.prompts.ACTION_DETECTION_PROMPT.format(prompt=user_request)),
+        ]
+        response = self.text_generation_model.invoke(messages)
 
-            return {
-                "request": user_request,
-                "action": response.content,
-                "last_node": "action_selector",
-                "messages": [response],
-            }
-        except Exception as e:
-            logging.error(f"Error in action_selector_node: {e}")
-            return {
-                "request": user_request,
-                "action": "clarify",
-                "last_node": "action_selector",
-            }
+        return {
+            "request": user_request,
+            "action": response.content,
+            "last_node": "action_selector",
+            "messages": [response],
+        }
 
     def select_action(self, state: AgentState):
         if state["messages"][-1].tool_calls and state["tool_usage_counter"] < PsyAgent.MAX_TOOL_LOOPS:
@@ -376,6 +323,13 @@ class PsyAgent:
         response = self.text_generation_model.invoke(messages)
         return {"messages": [response], "last_node": "question_answering"}
 
+    def get_last_human_message(self, state: AgentState):
+        """Get the last human message from the state."""
+        for message in reversed(state["messages"]):
+            if isinstance(message, HumanMessage):
+                return message.content
+        return ""
+
     def draw_graph(self):
         from langchain_core.runnables.graph import CurveStyle
 
@@ -400,7 +354,7 @@ class PsyAgent:
                 user_input = HumanMessage(content=user_message)
                 for event in self.graph.stream({"messages": [user_input]}, config, stream_mode="values"):
                     print(f"\n {event}")
-                    # event["messages"][-1].pretty_print()
+
             else:
                 user_response = HumanMessage(content=user_message)
 
@@ -409,15 +363,14 @@ class PsyAgent:
 
                 for event in self.graph.stream(None, config, stream_mode="values"):
                     print(f"\n {event}")
-                    # event["messages"][-1].pretty_print()
 
 
 if __name__ == "__main__":
     agent = PsyAgent(
         debug=True,
     )
-    # agent.run_agent_with_messages(
-    #     ["Search info on founders personality correlation with success in rag db. Don't clarify, just do it."],
-    #     {"configurable": {"thread_id": "1"}},
-    # )
+    agent.run_agent_with_messages(
+        ["Search info on founders personality correlation with success in rag db. Don't clarify."],
+        {"configurable": {"thread_id": "1"}},
+    )
     agent.draw_graph()
