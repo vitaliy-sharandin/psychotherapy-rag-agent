@@ -1,25 +1,17 @@
 import os
-import sys
-import uuid
 from datetime import datetime
 from time import sleep
 
 import pytest
-import yaml
-from deepeval import assert_test, evaluate
-from deepeval.metrics import GEval, ToolCorrectnessMetric
+from deepeval import evaluate
+from deepeval.metrics import GEval
 from deepeval.models.base_model import DeepEvalBaseLLM
-from deepeval.test_case import LLMTestCase, LLMTestCaseParams, ToolCall
-from langchain_core.messages import ToolMessage
+from deepeval.test_case import LLMTestCase, LLMTestCaseParams
 from langfuse import Langfuse
 from langfuse.client import DatasetStatus
-from langfuse.llama_index import LlamaIndexInstrumentor
-from langgraph.types import Command
-from ragas import EvaluationDataset
-from ragas.metrics import ContextUtilization, answer_relevancy, context_recall, faithfulness
 
-from src.agent import PsyAgent
-from src.prompts import ACTION_DETECTION_PROMPT
+from src.agent import PsyAgent, run_agent_with_messages
+from src.prompts.prompts import ACTION_DETECTION_PROMPT
 
 from .mocked_tools import MockedTool
 
@@ -43,15 +35,16 @@ def langfuse_client():
     return Langfuse()
 
 
-def test_agent_router(agent, langfuse_client, mocker):
+def test_agent_router(agent, langfuse_client):
     dataset = langfuse_client.get_dataset("agent_router_test_dataset")
 
     # TODO perform for more than one item - unarchive in Langfuse
     for test_item in filter(lambda item: item.status == DatasetStatus.ACTIVE, dataset.items):
         trace = langfuse_client.trace()
         langfuse_handler_trace = trace.get_langchain_handler(update_parent=True)
-        agent.run_agent_with_messages(
-            [test_item.input], {"configurable": {"thread_id": "1"}, "callbacks": [langfuse_handler_trace]}
+        run_agent_with_messages(
+            [test_item.input],
+            {"configurable": {"thread_id": "1"}, "callbacks": [langfuse_handler_trace]},
         )
 
         sleep(7)
@@ -81,7 +74,8 @@ def score_tool_calling(item, model, logged_trace):
     action_selector_observation = None
 
     for observation in sorted(
-        logged_trace.observations, key=lambda x: datetime.strptime(x.createdAt, "%Y-%m-%dT%H:%M:%S.%fZ")
+        logged_trace.observations,
+        key=lambda x: datetime.strptime(x.createdAt, "%Y-%m-%dT%H:%M:%S.%fZ"),
     ):
         if observation.name == "action_selector":
             action_selector_observation = observation
@@ -122,7 +116,9 @@ def score_final_router_decision(item, model, logged_trace):
     action_detector_output = None
 
     for observation in sorted(
-        logged_trace.observations, key=lambda x: datetime.strptime(x.createdAt, "%Y-%m-%dT%H:%M:%S.%fZ"), reverse=True
+        logged_trace.observations,
+        key=lambda x: datetime.strptime(x.createdAt, "%Y-%m-%dT%H:%M:%S.%fZ"),
+        reverse=True,
     ):
         if observation.name == "action_selector":
             action_selector_observation = observation

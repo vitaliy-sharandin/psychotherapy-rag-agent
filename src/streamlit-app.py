@@ -1,15 +1,16 @@
 import os
-import uuid
-import streamlit as st
-from agent import PsyAgent
-from langchain_core.messages import HumanMessage
-from metrics import REQUEST_COUNT, REQUEST_LATENCY, ERROR_COUNT, USER_FEEDBACK, AGENT_RESPONSE_TIME
 import time
-from prometheus_client import start_http_server
-from langfuse.callback import CallbackHandler
+import uuid
+
+import streamlit as st
 from dotenv import load_dotenv
+from langchain_core.messages import HumanMessage
+from langfuse.callback import CallbackHandler
 from langfuse.client import Langfuse
-from langfuse.decorators import langfuse_context, observe
+from prometheus_client import start_http_server
+
+from agent import PsyAgent
+from src.metrics.metrics import AGENT_RESPONSE_TIME, REQUEST_LATENCY, USER_FEEDBACK
 
 load_dotenv()
 
@@ -75,7 +76,7 @@ def output_agent_response(user_input, final_response, session_messages, input_st
             "content": agent_response,
             "response_time": response_time,
             "msg_langfuse_trace_id": msg_langfuse_trace_id,
-        }
+        },
     )
 
 
@@ -106,7 +107,9 @@ def render_message_history():
 
             if message["role"] == "assistant":
                 render_feedback_buttons(
-                    idx, message.get("response_time", 0), message.get("msg_langfuse_trace_id", None)
+                    idx,
+                    message.get("response_time", 0),
+                    message.get("msg_langfuse_trace_id", None),
                 )
 
 
@@ -143,7 +146,11 @@ def run_agent():
                     final_response = event
 
                 output_agent_response(
-                    user_input, final_response, session_messages, input_start_time, config.get("run_id", None)
+                    user_input,
+                    final_response,
+                    session_messages,
+                    input_start_time,
+                    config.get("run_id", None),
                 )
 
         else:
@@ -158,7 +165,11 @@ def run_agent():
                     final_response = event
 
                 output_agent_response(
-                    user_input, final_response, session_messages, input_start_time, config.get("run_id", None)
+                    user_input,
+                    final_response,
+                    session_messages,
+                    input_start_time,
+                    config.get("run_id", None),
                 )
 
 

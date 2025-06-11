@@ -27,7 +27,10 @@ dependencies = [
     "ragas==0.2.14",
     "llama-index-llms-langchain==0.6.1",
     "deepeval==2.7.5",
-    "pytest-mock==3.14.0"
+    "pytest-mock==3.14.0",
+    "mcp==1.9.3",
+    "langchain-mcp-adapters==0.1.7",
+    "aiosqlite"
 ]
 
 [tool.pytest.ini_options]

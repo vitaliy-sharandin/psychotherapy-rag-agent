@@ -1,23 +1,12 @@
 import os
-import sys
 import uuid
-from datetime import datetime
 from time import sleep
 
 import pytest
-import yaml
-from deepeval import assert_test, evaluate
-from deepeval.metrics import GEval, ToolCorrectnessMetric
-from deepeval.models.base_model import DeepEvalBaseLLM
-from deepeval.test_case import LLMTestCase, LLMTestCaseParams, ToolCall
 from langfuse import Langfuse
 from langfuse.client import DatasetStatus
-from langfuse.llama_index import LlamaIndexInstrumentor
-from ragas import EvaluationDataset
-from ragas.metrics import ContextUtilization, answer_relevancy, context_recall, faithfulness
 
-from src.agent import PsyAgent
-from src.prompts import ACTION_DETECTION_PROMPT
+from src.agent import PsyAgent, run_agent_with_messages
 
 from .mocked_tools import MockedTool
 
@@ -63,7 +52,7 @@ def test_agent_trajectory_stability(agent, langfuse_client):
             trace = langfuse_client.trace()
             langfuse_handler_trace = trace.get_langchain_handler(update_parent=True)
 
-            agent.run_agent_with_messages(
+            run_agent_with_messages(
                 [test_item.input],
                 {
                     "configurable": {"thread_id": str(uuid.uuid4())},
@@ -89,9 +78,11 @@ def test_agent_trajectory_stability(agent, langfuse_client):
 
     langfuse_client.flush()
 
+
 def test_agent_trajectory_generalization(agent, langfuse_client):
-    #TODO create generalization test for similar queries to see if agent takes optimal paths
+    # TODO create generalization test for similar queries to see if agent takes optimal paths
     ...
+
 
 def get_amount_of_steps(logged_trace):
     steps_amount = 0

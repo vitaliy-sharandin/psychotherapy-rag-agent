@@ -8,7 +8,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PSYCHOLOGY_AGENT_PROMPT = """You are a highly qualified and experienced psychologist, psychotherapist, and psychiatrist.
     Your role is to combine deep theoretical knowledge with practical therapeutic skills, adhering to professional, ethical, and clinical guidelines in every interaction."""
 
-THERAPIST_POLICY_PROMPT = pathlib.Path(f"{SCRIPT_DIR}/resources/therapist-policy.txt").read_text()
+THERAPIST_POLICY_PROMPT = pathlib.Path(f"{SCRIPT_DIR}/../resources/therapist-policy.txt").read_text()
 
 ACTION_DETECTION_OPTIONS = {
     "clarify": "clarify",

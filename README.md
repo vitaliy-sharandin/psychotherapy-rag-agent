@@ -21,6 +21,9 @@ The assistant interacts with a vector database, such as ChromaDB, to access inde
 ### Tavily
 In addition to the RAG system, the assistant is equipped with Tavily Web, allowing it to fetch real-time data from the web when necessary. This integration ensures that the assistant can go beyond its internal knowledge base and offer up-to-date, web-sourced information when answering user questions that require more current or specific data.
 
+### MCP Tools and Prompts Serving
+There is local MCP client/server integration which serves the tools and prompts to the agent through Model Context Protocol. This solution can be extended to be used with remote MCP server over HTTP.
+
 ### Streamlit Interface
 
 The Streamlit app provides a conversational interface. Users input their queries, and the agent processes and responds accordingly. The app maintains session state, keeping track of the conversation history.

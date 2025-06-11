@@ -1,39 +1,24 @@
-import ast
-import logging
 import os
 import sqlite3
-from typing import Annotated, List, TypedDict
+from typing import Annotated, TypedDict
 
-import chromadb
 from dotenv import load_dotenv
 from langchain.tools.base import StructuredTool
-from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.pydantic_v1 import BaseModel, Field
-from langchain_core.tools import tool
-from langchain_core.tools.base import InjectedToolCallId
+from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.graph import END, StateGraph
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from langgraph.graph import StateGraph
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import InjectedState, ToolNode
-from langgraph.types import Command
-from langsmith import traceable
-from langsmith.wrappers import wrap_openai
-from llama_index.core import Settings, SimpleDirectoryReader, StorageContext, VectorStoreIndex, load_index_from_storage
-from llama_index.core.node_parser import HierarchicalNodeParser, get_leaf_nodes
-from llama_index.core.postprocessor import LLMRerank, SentenceTransformerRerank
-from llama_index.core.query_engine import RetrieverQueryEngine
-from llama_index.core.retrievers import AutoMergingRetriever
-from llama_index.core.storage.docstore import SimpleDocumentStore
+from langgraph.prebuilt import ToolNode
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.llms.ollama import Ollama
-from llama_index.postprocessor.flag_embedding_reranker import FlagEmbeddingReranker
-from llama_index.vector_stores.chroma import ChromaVectorStore
-from tavily import TavilyClient
 
-import prompts
-from metrics import AGENT_RESPONSE_TIME, REQUEST_COUNT, REQUEST_LATENCY, timer
+from src.mcp_service.mcp_client import get_client_tools
+from src.metrics.metrics import AGENT_RESPONSE_TIME, timer
+from src.prompts import prompts
+from src.tools.search_tools import SearchTools
 
 load_dotenv()
 
@@ -65,28 +50,12 @@ class AgentState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
 
 
-class Queries(BaseModel):
-    """Queries for RAG and web search based on user request"""
-
-    rag_queries: str = Field(description="A list of queries for RAG search")
-    web_queries: str = Field(description="A list of queries for web search")
-
-
-class RagQueries(BaseModel):
-    """Queries for RAG search based on user request"""
-
-    rag_queries: str = Field(description="A list of queries for RAG search")
-
-
-class WebQueries(BaseModel):
-    """Queries for web search based on user request"""
-
-    web_queries: str = Field(description="A list of queries for web search")
-
-
 class PsyAgent:
     text_generation_model_vllm = ChatOpenAI(
-        model=TEXT_GENERATION_MODEL_NAME, api_key=LLM_API_KEY, base_url=LLM_ADDRESS, temperature=0
+        model=TEXT_GENERATION_MODEL_NAME,
+        api_key=LLM_API_KEY,
+        base_url=LLM_ADDRESS,
+        temperature=0,
     )
     text_generation_model = ChatOllama(model=TEXT_GENERATION_MODEL_NAME)
     embedding_model = OllamaEmbedding(model_name="mxbai-embed-large")
@@ -101,14 +70,13 @@ class PsyAgent:
         embedding_model=None,
         rag_model=None,
         knowledge_base_folder=f"{SCRIPT_DIR}/resources/pdf",
-        knowledge_retrieval=True,
         web_search_enabled=True,
         rag_search_enabled=True,
         tools=[],
+        mcp=False,
         debug=False,
     ):
         self.prompts = prompts
-        self.knowledge_base_folder = knowledge_base_folder
 
         if vllm_model:
             self.text_generation_model = text_generation_model or PsyAgent.text_generation_model_vllm
@@ -122,31 +90,41 @@ class PsyAgent:
 
         enabled_tools = []
 
-        if knowledge_retrieval:
+        if not mcp:
             if web_search_enabled:
-                enabled_tools += [StructuredTool.from_function(self.web_search)]
-                self.tavily = TavilyClient(api_key=TAVILY_API_KEY)
+                search_tools = SearchTools(
+                    rag_model=self.rag_model,
+                    embedding_model=self.embedding_model,
+                    knowledge_base_folder=knowledge_base_folder,
+                )
+                enabled_tools += [StructuredTool.from_function(search_tools.web_search)]
 
             if rag_search_enabled:
-                enabled_tools += [StructuredTool.from_function(self.rag_search)]
-                self._initialize_vector_store()
-                # self._initialize_vector_store_rerank()
+                search_tools = SearchTools(
+                    rag_model=self.rag_model,
+                    embedding_model=self.embedding_model,
+                    knowledge_base_folder=knowledge_base_folder,
+                )
+                enabled_tools += [StructuredTool.from_function(search_tools.rag_search)]
 
             if tools:
                 enabled_tools = [StructuredTool.from_function(tool) for tool in tools]
 
-            self.tool_node = ToolNode(enabled_tools)
-            builder.add_node("tools", self.tool_node)
+            builder.add_node("action_selector", self.action_selector_node)
+            builder.add_node("clarify", self.clarify_node)
+            builder.add_node("question_answering", self.question_answering_node)
 
         else:
-            self.tool_node = ToolNode(enabled_tools)
-            builder.add_node("tools", self.tool_node)
+            builder.add_node("action_selector", self.async_action_selector_node)
+            builder.add_node("clarify", self.async_clarify_node)
+            builder.add_node("question_answering", self.async_question_answering_node)
+
+            enabled_tools = list(tools)
 
         self.text_generation_model = self.text_generation_model.bind_tools(enabled_tools)
 
-        builder.add_node("action_selector", self.action_selector_node)
-        builder.add_node("clarify", self.clarify_node)
-        builder.add_node("question_answering", self.question_answering_node)
+        self.tool_node = ToolNode(enabled_tools)
+        builder.add_node("tools", self.tool_node)
 
         builder.set_entry_point("action_selector")
 
@@ -156,100 +134,16 @@ class PsyAgent:
         builder.add_edge("tools", "action_selector")
         builder.add_edge("question_answering", "action_selector")
 
-        conn = sqlite3.connect(":memory:", check_same_thread=False)
-        checkpointer = SqliteSaver(conn)
-
-        self.graph = builder.compile(
-            checkpointer=checkpointer, interrupt_after=["clarify", "question_answering"], debug=debug
-        )
-
-    def rag_search(
-        self,
-        tool_call_id: Annotated[str, InjectedToolCallId],
-        request: str,
-    ):
-        """
-        RAG search through local documents vector database based on user request.
-
-        Args:
-            request (str): User request.
-        """
-
-        result = self.query_engine.query(request)
-
-        return Command(
-            update={
-                "rag_search_results": str(result.response),
-                "messages": [ToolMessage(str(result.response), tool_call_id=tool_call_id)],
-            }
-        )
-
-    def web_search(
-        self,
-        tool_call_id: Annotated[str, InjectedToolCallId],
-        request: str,
-    ):
-        """Searches web for information based on user's request.
-
-        Args:
-            request (str): User request.
-        """
-
-        response = self.tavily.search(query=request, max_results=2)
-        search_results = [r["content"] for r in response["results"]]
-
-        return Command(
-            update={
-                "web_search_results": str(search_results),
-                "messages": [ToolMessage(str(search_results), tool_call_id=tool_call_id)],
-            }
-        )
-
-    @timer(name="vector_db_creation", metric=AGENT_RESPONSE_TIME)
-    def _initialize_vector_store(self):
-        Settings.llm = self.rag_model
-        documents = SimpleDirectoryReader(f"{self.knowledge_base_folder}", filename_as_id=True).load_data()
-
-        db = chromadb.PersistentClient(path="./chroma_db")
-        chroma_collection = db.get_or_create_collection("knowledge_base")
-
-        vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
-        storage_context = StorageContext.from_defaults(vector_store=vector_store)
-
-        if chroma_collection.count() == 0:
-            vector_store_index = VectorStoreIndex.from_documents(
-                documents, storage_context=storage_context, embed_model=self.embedding_model
-            )
+        if mcp:
+            self.builder = builder
         else:
-            vector_store_index = VectorStoreIndex.from_vector_store(vector_store, embed_model=self.embedding_model)
-            # TODO Create a proper refresh of db
-            vector_store_index.refresh_ref_docs(documents)
-
-        self.query_engine = vector_store_index.as_query_engine()
-
-    def _initialize_vector_store_rerank(self):
-        Settings.llm = self.rag_model
-
-        documents = SimpleDirectoryReader(f"{self.knowledge_base_folder}", filename_as_id=True).load_data()
-
-        db = chromadb.PersistentClient(path="./chroma_db")
-        chroma_collection = db.get_or_create_collection("knowledge_base")
-
-        vector_store = ChromaVectorStore(chroma_collection=chroma_collection)
-        storage_context = StorageContext.from_defaults(vector_store=vector_store)
-
-        if chroma_collection.count() == 0:
-            vector_store_index = VectorStoreIndex.from_documents(
-                documents, storage_context=storage_context, embed_model=self.embedding_model
+            conn = sqlite3.connect(":memory:", check_same_thread=False)
+            checkpointer = SqliteSaver(conn)
+            self.graph = builder.compile(
+                checkpointer=checkpointer,
+                interrupt_after=["clarify", "question_answering"],
+                debug=debug,
             )
-        else:
-            vector_store_index = VectorStoreIndex.from_vector_store(vector_store, embed_model=self.embedding_model)
-            # TODO Create a proper refresh of db
-            vector_store_index.refresh_ref_docs(documents)
-
-        rerank = FlagEmbeddingReranker(top_n=2, model="BAAI/bge-reranker-base")
-
-        self.rerank_query_engine = vector_store_index.as_query_engine(similarity_top_k=6, node_postprocessors=[rerank])
 
     @timer(name="action_selector_node", metric=AGENT_RESPONSE_TIME)
     def action_selector_node(self, state: AgentState):
@@ -268,10 +162,26 @@ class PsyAgent:
             "messages": [response],
         }
 
+    async def async_action_selector_node(self, state: AgentState):
+        user_request = self.get_last_human_message(state)
+
+        messages = state["messages"] + [
+            SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
+            HumanMessage(content=self.prompts.ACTION_DETECTION_PROMPT.format(prompt=user_request)),
+        ]
+        response = await self.text_generation_model.ainvoke(messages)
+
+        return {
+            "request": user_request,
+            "action": response.content,
+            "last_node": "action_selector",
+            "messages": [response],
+        }
+
     def select_action(self, state: AgentState):
         if state["messages"][-1].tool_calls and state["tool_usage_counter"] < PsyAgent.MAX_TOOL_LOOPS:
             return "tools"
-        elif state["messages"][-1].tool_calls and state["tool_usage_counter"] >= PsyAgent.MAX_TOOL_LOOPS:
+        if state["messages"][-1].tool_calls and state["tool_usage_counter"] >= PsyAgent.MAX_TOOL_LOOPS:
             return "question_answering"
         return state["action"]
 
@@ -286,6 +196,16 @@ class PsyAgent:
         response = self.text_generation_model.invoke(messages)
         return {"messages": [response], "last_node": "clarify"}
 
+    async def async_clarify_node(self, state: AgentState):
+        messages = state["messages"] + [
+            SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
+            SystemMessage(content=self.prompts.THERAPIST_POLICY_PROMPT),
+            HumanMessage(content=self.prompts.CLARIFICATION_PROMPT.format(prompt=state["request"])),
+        ]
+
+        response = await self.text_generation_model.ainvoke(messages)
+        return {"messages": [response], "last_node": "clarify"}
+
     @timer(name="knowledge_evaluation_node", metric=AGENT_RESPONSE_TIME)
     def knowledge_evaluation_node(self, state: AgentState):
         # Evaluate the knowledge search results and determine if they are relevant
@@ -293,8 +213,10 @@ class PsyAgent:
             SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
             HumanMessage(
                 content=self.prompts.KNOWLEDGE_RELEVANCY_EVALUATION_PROMPT.format(
-                    rag=state["rag_search_results"], web=state["web_search_results"], request=state["request"]
-                )
+                    rag=state["rag_search_results"],
+                    web=state["web_search_results"],
+                    request=state["request"],
+                ),
             ),
         ]
 
@@ -323,6 +245,16 @@ class PsyAgent:
         response = self.text_generation_model.invoke(messages)
         return {"messages": [response], "last_node": "question_answering"}
 
+    async def async_question_answering_node(self, state: AgentState):
+        messages = state["messages"] + [
+            SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
+            SystemMessage(content=self.prompts.THERAPIST_POLICY_PROMPT),
+            HumanMessage(content=self.prompts.QUESTION_ANSWERING_PROMPT.format(request=state["request"])),
+        ]
+
+        response = await self.text_generation_model.ainvoke(messages)
+        return {"messages": [response], "last_node": "question_answering"}
+
     def get_last_human_message(self, state: AgentState):
         """Get the last human message from the state."""
         for message in reversed(state["messages"]):
@@ -336,13 +268,62 @@ class PsyAgent:
         with open("graph.png", "wb") as f:
             f.write(self.graph.get_graph().draw_mermaid_png(curve_style=CurveStyle.NATURAL))
 
-    def run_agent_with_messages(self, input_messages: list, config):
+
+def run_agent_with_messages(input_messages: list, config=None):
+    agent = PsyAgent(
+        debug=True,
+    )
+    for user_message in input_messages:
+        if (
+            "last_node" not in agent.graph.get_state(config).values
+            or not agent.graph.get_state(config).values["last_node"]
+        ):
+            agent.graph.update_state(
+                config,
+                {
+                    "request": "",
+                    "action": "",
+                    "last_node": "",
+                    "tool_usage_counter": 0,
+                },
+            )
+            user_input = HumanMessage(content=user_message)
+            for event in agent.graph.stream({"messages": [user_input]}, config, stream_mode="values"):
+                print(f"\n {event}")
+
+        else:
+            user_response = HumanMessage(content=user_message)
+
+            last_node = agent.graph.get_state(config).values["last_node"]
+            agent.graph.update_state(config, {"messages": [user_response]}, as_node=last_node)
+
+            for event in agent.graph.stream(None, config, stream_mode="values"):
+                print(f"\n {event}")
+
+
+async def async_run_mcp_agent_with_messages(input_messages: list):
+    config = {"configurable": {"thread_id": "1"}}
+
+    async with AsyncSqliteSaver.from_conn_string(":memory:") as checkpointer:
+        tools = await get_client_tools()
+
+        agent = PsyAgent(
+            mcp=True,
+            tools=tools,
+            debug=True,
+        )
+
+        agent.graph = agent.builder.compile(
+            checkpointer=checkpointer,
+            interrupt_after=["clarify", "question_answering"],
+            debug=True,
+        )
+
         for user_message in input_messages:
-            if (
-                "last_node" not in self.graph.get_state(config).values
-                or not self.graph.get_state(config).values["last_node"]
-            ):
-                self.graph.update_state(
+            values_list = await agent.graph.aget_state(config)
+            nodes = await agent.graph.aget_state(config)
+            if "last_node" not in values_list.values or not nodes.values["last_node"]:
+                await agent.graph.aupdate_state(
                     config,
                     {
                         "request": "",
@@ -352,25 +333,27 @@ class PsyAgent:
                     },
                 )
                 user_input = HumanMessage(content=user_message)
-                for event in self.graph.stream({"messages": [user_input]}, config, stream_mode="values"):
+                async for event in agent.graph.astream({"messages": [user_input]}, config, stream_mode="values"):
                     print(f"\n {event}")
 
             else:
                 user_response = HumanMessage(content=user_message)
 
-                last_node = self.graph.get_state(config).values["last_node"]
-                self.graph.update_state(config, {"messages": [user_response]}, as_node=last_node)
+                nodes = await agent.graph.aget_state(config)
 
-                for event in self.graph.stream(None, config, stream_mode="values"):
+                last_node = nodes.values["last_node"]
+                await agent.graph.aupdate_state(config, {"messages": [user_response]}, as_node=last_node)
+
+                async for event in agent.graph.astream(None, config, stream_mode="values"):
                     print(f"\n {event}")
 
 
 if __name__ == "__main__":
-    agent = PsyAgent(
-        debug=True,
-    )
-    agent.run_agent_with_messages(
+    run_agent_with_messages(
         ["Search info on founders personality correlation with success in rag db. Don't clarify."],
         {"configurable": {"thread_id": "1"}},
     )
-    agent.draw_graph()
+
+    # asyncio.run(async_run_mcp_agent_with_messages(
+    #     ["Search info on founders personality correlation with success in rag db. Don't clarify."]
+    # ))
