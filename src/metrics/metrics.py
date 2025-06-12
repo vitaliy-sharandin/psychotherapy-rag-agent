@@ -104,3 +104,13 @@ class timer(ContextDecorator):
         if self.metric:
             self.metric.labels(self.name).observe(duration)
         return False
+    
+    async def __aenter__(self):
+        self._start_time = time.perf_counter()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        duration = time.perf_counter() - self._start_time
+        if self.metric:
+            self.metric.labels(self.name).observe(duration)
+        return False
