@@ -15,10 +15,10 @@ from langgraph.prebuilt import ToolNode
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.llms.ollama import Ollama
 
-from src.mcp_service.mcp_client import get_client_tools
-from src.metrics.metrics import AGENT_RESPONSE_TIME, timer
-from src.prompts import prompts
-from src.tools.search_tools import SearchTools
+from mcp_service.mcp_client import get_client_tools
+from metrics.metrics import AGENT_RESPONSE_TIME, timer
+from prompts import prompts
+from tools.search_tools import SearchTools
 
 load_dotenv()
 
