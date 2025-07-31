@@ -1,17 +1,17 @@
 import os
 import sqlite3
-from typing import Annotated, TypedDict
 
 from dotenv import load_dotenv
 from langchain.tools.base import StructuredTool
-from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
+from langchain_core.messages.utils import count_tokens_approximately
 from langchain_ollama import ChatOllama
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
-from langgraph.graph import StateGraph
-from langgraph.graph.message import add_messages
+from langgraph.graph import MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
+from langmem.short_term import RunningSummary, SummarizationNode
 from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.llms.ollama import Ollama
 
@@ -39,15 +39,18 @@ EMBEDDING_MODEL_ADDRESS = os.getenv("EMBEDDING_MODEL_ADDRESS", "http://localhost
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-class AgentState(TypedDict):
-    request: str
+MAX_TOKENS = int(os.getenv("MAX_TOKENS", 20000))
+MAX_TOKENS_BEFORE_SUMMARY = int(os.getenv("MAX_TOKENS_BEFORE_SUMMARY", 40000))
+MAX_SUMMARY_TOKENS = int(os.getenv("MAX_SUMMARY_TOKENS", 6000))
 
+
+class AgentState(MessagesState):
+    request: str
     action: str
     last_node: str
-
     tool_usage_counter: int
-
-    messages: Annotated[list[AnyMessage], add_messages]
+    summarized_messages: list[AnyMessage]
+    context: dict[str, RunningSummary]
 
 
 class PsyAgent:
@@ -75,6 +78,9 @@ class PsyAgent:
         tools=[],
         mcp=False,
         debug=False,
+        max_tokens=MAX_TOKENS,
+        max_tokens_before_summary=MAX_TOKENS_BEFORE_SUMMARY,
+        max_summary_tokens=MAX_SUMMARY_TOKENS,
     ):
         self.prompts = prompts
 
@@ -85,6 +91,15 @@ class PsyAgent:
 
         self.embedding_model = embedding_model or PsyAgent.embedding_model
         self.rag_model = rag_model or PsyAgent.rag_model
+
+        # Initialize summarization node with configurable token limits
+        self.summarization_node = SummarizationNode(
+            token_counter=count_tokens_approximately,
+            model=self.text_generation_model,
+            max_tokens=max_tokens,
+            max_tokens_before_summary=max_tokens_before_summary,
+            max_summary_tokens=max_summary_tokens,
+        )
 
         builder = StateGraph(AgentState)
 
@@ -110,11 +125,13 @@ class PsyAgent:
             if tools:
                 enabled_tools = [StructuredTool.from_function(tool) for tool in tools]
 
+            builder.add_node("summarize", self.summarization_node)
             builder.add_node("action_selector", self.action_selector_node)
             builder.add_node("clarify", self.clarify_node)
             builder.add_node("question_answering", self.question_answering_node)
 
         else:
+            builder.add_node("summarize", self.summarization_node)
             builder.add_node("action_selector", self.async_action_selector_node)
             builder.add_node("clarify", self.async_clarify_node)
             builder.add_node("question_answering", self.async_question_answering_node)
@@ -126,13 +143,14 @@ class PsyAgent:
         self.tool_node = ToolNode(enabled_tools)
         builder.add_node("tools", self.tool_node)
 
-        builder.set_entry_point("action_selector")
+        builder.set_entry_point("summarize")
+        builder.add_edge("summarize", "action_selector")
 
         builder.add_conditional_edges("action_selector", self.select_action, self.prompts.ACTION_DETECTION_OPTIONS)
 
-        builder.add_edge("clarify", "action_selector")
-        builder.add_edge("tools", "action_selector")
-        builder.add_edge("question_answering", "action_selector")
+        builder.add_edge("clarify", "summarize")
+        builder.add_edge("tools", "summarize")
+        builder.add_edge("question_answering", "summarize")
 
         if mcp:
             self.builder = builder
@@ -147,13 +165,20 @@ class PsyAgent:
 
     @timer(name="action_selector_node", metric=AGENT_RESPONSE_TIME)
     def action_selector_node(self, state: AgentState):
-        user_request = self.get_last_human_message(state)
+        user_request, messages_without_human = self.get_last_human_message_from_summarized(state["summarized_messages"])
 
-        messages = state["messages"] + [
-            SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
-            HumanMessage(content=self.prompts.ACTION_DETECTION_PROMPT.format(prompt=user_request)),
-        ]
-        response = self.text_generation_model.invoke(messages)
+        response = None
+
+        if user_request:
+            messages = messages_without_human + [
+                SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
+                HumanMessage(content=self.prompts.ACTION_DETECTION_PROMPT.format(prompt=user_request)),
+            ]
+            response = self.text_generation_model.invoke(messages)
+        else:
+            response = AIMessage(
+                content="clarify",
+            )
 
         return {
             "request": user_request,
@@ -163,13 +188,17 @@ class PsyAgent:
         }
 
     async def async_action_selector_node(self, state: AgentState):
-        user_request = self.get_last_human_message(state)
+        user_request, messages_without_human = self.get_last_human_message_from_summarized(state["summarized_messages"])
 
-        messages = state["messages"] + [
-            SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
-            HumanMessage(content=self.prompts.ACTION_DETECTION_PROMPT.format(prompt=user_request)),
-        ]
-        response = await self.text_generation_model.ainvoke(messages)
+        response = None
+
+        if user_request:
+            messages = messages_without_human + [
+                SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
+                HumanMessage(content=self.prompts.ACTION_DETECTION_PROMPT.format(prompt=user_request)),
+            ]
+        else:
+            response = await self.text_generation_model.ainvoke(messages)
 
         return {
             "request": user_request,
@@ -187,17 +216,22 @@ class PsyAgent:
 
     @timer(name="clarify_node", metric=AGENT_RESPONSE_TIME)
     def clarify_node(self, state: AgentState):
-        messages = state["messages"] + [
+        _, messages_without_human = self.get_last_human_message_from_summarized(state["summarized_messages"])
+
+        messages = messages_without_human + [
             SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
             SystemMessage(content=self.prompts.THERAPIST_POLICY_PROMPT),
             HumanMessage(content=self.prompts.CLARIFICATION_PROMPT.format(prompt=state["request"])),
         ]
 
         response = self.text_generation_model.invoke(messages)
+
         return {"messages": [response], "last_node": "clarify"}
 
     async def async_clarify_node(self, state: AgentState):
-        messages = state["messages"] + [
+        _, messages_without_human = self.get_last_human_message_from_summarized(state["summarized_messages"])
+
+        messages = messages_without_human + [
             SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
             SystemMessage(content=self.prompts.THERAPIST_POLICY_PROMPT),
             HumanMessage(content=self.prompts.CLARIFICATION_PROMPT.format(prompt=state["request"])),
@@ -236,7 +270,9 @@ class PsyAgent:
 
     @timer(name="question_answering_node", metric=AGENT_RESPONSE_TIME)
     def question_answering_node(self, state: AgentState):
-        messages = state["messages"] + [
+        _, messages_without_human = self.get_last_human_message_from_summarized(state["summarized_messages"])
+
+        messages = messages_without_human + [
             SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
             SystemMessage(content=self.prompts.THERAPIST_POLICY_PROMPT),
             HumanMessage(content=self.prompts.QUESTION_ANSWERING_PROMPT.format(request=state["request"])),
@@ -246,7 +282,9 @@ class PsyAgent:
         return {"messages": [response], "last_node": "question_answering"}
 
     async def async_question_answering_node(self, state: AgentState):
-        messages = state["messages"] + [
+        _, messages_without_human = self.get_last_human_message_from_summarized(state["summarized_messages"])
+
+        messages = messages_without_human + [
             SystemMessage(content=self.prompts.PSYCHOLOGY_AGENT_PROMPT),
             SystemMessage(content=self.prompts.THERAPIST_POLICY_PROMPT),
             HumanMessage(content=self.prompts.QUESTION_ANSWERING_PROMPT.format(request=state["request"])),
@@ -255,12 +293,14 @@ class PsyAgent:
         response = await self.text_generation_model.ainvoke(messages)
         return {"messages": [response], "last_node": "question_answering"}
 
-    def get_last_human_message(self, state: AgentState):
-        """Get the last human message from the state."""
-        for message in reversed(state["messages"]):
-            if isinstance(message, HumanMessage):
-                return message.content
-        return ""
+    def get_last_human_message_from_summarized(self, messages: list[AnyMessage]):
+        """Get the last human message from summarized messages and return remaining messages."""
+        for i in range(len(messages) - 1, -1, -1):
+            if isinstance(messages[i], HumanMessage):
+                human_message = messages[i].content
+                remaining_messages = messages[:i] + messages[i + 1 :]
+                return human_message, remaining_messages
+        return "", messages
 
     def draw_graph(self):
         from langchain_core.runnables.graph import CurveStyle
@@ -330,6 +370,7 @@ async def async_run_mcp_agent_with_messages(input_messages: list):
                         "action": "",
                         "last_node": "",
                         "tool_usage_counter": 0,
+                        "context": {},
                     },
                 )
                 user_input = HumanMessage(content=user_message)

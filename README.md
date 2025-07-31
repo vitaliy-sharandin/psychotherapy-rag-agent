@@ -24,6 +24,20 @@ In addition to the RAG system, the assistant is equipped with Tavily Web, allowi
 ### MCP Tools and Prompts Serving
 There is local MCP client/server integration which serves the tools and prompts to the agent through Model Context Protocol. This solution can be extended to be used with remote MCP server over HTTP.
 
+### Historical Memory Compression
+The agent implements intelligent memory compression to handle long conversations efficiently. The system:
+
+- **Semantic Clustering**: Groups related historical messages using K-means clustering on embeddings
+- **Importance Scoring**: Prioritizes messages based on type, length, and psychology-specific keywords
+- **Selective Compression**: Compresses less important message clusters into summaries while preserving:
+  - All system messages (never compressed)
+  - The last human message (current context)
+  - High-importance message clusters
+- **Automatic Triggering**: Activates when conversation approaches token limits (6000+ tokens)
+- **Token Management**: Reduces memory usage from ~8000 to ~3000-4000 tokens while maintaining therapeutic context
+
+This ensures the agent maintains relevant conversation history without hitting context window limits during extended therapy sessions.
+
 ### Streamlit Interface
 
 The Streamlit app provides a conversational interface. Users input their queries, and the agent processes and responds accordingly. The app maintains session state, keeping track of the conversation history.

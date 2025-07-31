@@ -19,7 +19,7 @@ dependencies = [
     "llama-index-vector-stores-chroma==0.4.1",
     "llama-index-llms-ollama==0.5.0",
     "llama-index-postprocessor-flag-embedding-reranker==0.3.0",
-    "langgraph==0.3.27",
+    "langgraph==0.6.0",
     "tavily-python==0.5.0",
     "prometheus-client==0.21.1",
     "langfuse==2.59.3",
@@ -30,7 +30,8 @@ dependencies = [
     "pytest-mock==3.14.0",
     "mcp==1.9.3",
     "langchain-mcp-adapters==0.1.7",
-    "aiosqlite"
+    "aiosqlite",
+    "langmem>=0.0.29",
 ]
 
 [tool.pytest.ini_options]

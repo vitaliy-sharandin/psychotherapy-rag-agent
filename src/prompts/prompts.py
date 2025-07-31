@@ -21,7 +21,7 @@ KNOWLEDGE_RETRIEVAL_PROMPT = "If everything is clear, but you think some additio
 ACTION_DETECTION_PROMPT = """
     <INSTRUCTIONS_START>
     This is a router prompt. Here you can either return one word action from list below or use tools, you can also invoke both.
-    Follow user instructions as closely as possible.
+    Look at messages history and follow user instructions as closely as possible.
 
     Action options as content response:
     'clarify' - ask user to clarify his request, if you are not sure what he wants, unless user tells you he doesn't have additional info or  it's all you need to know.
@@ -38,6 +38,7 @@ ACTION_DETECTION_PROMPT = """
 CLARIFICATION_PROMPT = """<INSTRUCTIONS_START>
     The user\'s intent in his request could be interpreted in many ways.
     Ask user to specify exactly what he wants potentially giving him options.
+    If user request is absent, look at conversation history it could be there, if not, ask user to provide request.
     <INSTRUCTIONS_END>
 
     <USER_REQUEST_START>
