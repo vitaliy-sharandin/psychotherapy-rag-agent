@@ -1,4 +1,4 @@
-# MCP Enabled Psychotherapy RAG and Web Agent
+# MCP Enabled Psychotherapy RAG and Web Agent with Azure Cloud Deployment
 
 Psy AI is an agent that leverages local Ollama Llama 3.1 8b model together with RAG and web capabilites to provide insights based on user input. Its prompting is optimized to psychology, psychotherapy, and psychiatry to help user in most professional yet caring manner.
 
